@@ -22,3 +22,10 @@ supported wavelets", 1997.
 
 Based on Aya, Geenes, Penev, "Shape-preserving wavelet-based multivariate density
 estimation", 2017, Journal of Multivariate analysis
+
+##
+
+> $ python -m venv /path/to/env
+> $ source /path/to/env/bin/activate
+> $ python tests/something
+
