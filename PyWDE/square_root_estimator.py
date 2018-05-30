@@ -4,7 +4,8 @@ import numpy as np
 import itertools as itt
 from scipy.interpolate import interp1d
 from functools import partial
-from .common import *
+from .common import wave_support_info, all_qx, wave_tensor, support_tensor, suppf_tensor, calculate_nearest_balls, \
+    zs_range, all_zs_tensor, calc_num, calc_coeff
 
 class WaveletDensityEstimator(object):
     def __init__(self, wave_name, k=1, j0=1, j1=None, thresholding=None):

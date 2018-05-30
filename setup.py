@@ -1,11 +1,12 @@
-#!/usr/bin/env python
+from setuptools import setup
 
-from distutils.core import setup
-
-setup(name='pywde',
-      version='0.0.1',
-      description='Wavelet-based density estimators',
-      author='Carlos Aya',
-      author_email='carlosayam@yahoo.com.au',
-      packages=['pywde'],
-     )
+setup(
+    name='pywde',
+    version='0.0.1',
+    packages=['pywde'],
+    url='',
+    license='',
+    author='Carlos Aya',
+    author_email='',
+    description='Wavelet density estimation in Python'
+)
