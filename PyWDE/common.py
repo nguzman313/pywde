@@ -1,4 +1,3 @@
-from __future__ import division
 import pywt
 import math
 import numpy as np
@@ -18,7 +17,7 @@ def np_mult(cols):
 
 # all possible combinations of {0,1}, i.e. {0,1}^dim
 def all_qx(dim):
-    for wave_x, qx in enumerate(itt.product(xrange(2), repeat=dim)):
+    for wave_x, qx in enumerate(itt.product(range(2), repeat=dim)):
         yield wave_x, tuple(qx)
 
 def support_tensor(qx, phi_supp, psi_supp):
@@ -29,7 +28,7 @@ def support_tensor(qx, phi_supp, psi_supp):
 # all z-min, z-max ranges as tensor of ranges for phi and psi support
 def all_zs_tensor(zs_min, zs_max):
     it = zip(zs_min, zs_max)
-    return [xrange(int(a), int(b)+1) for a, b in it]
+    return [range(int(a), int(b)+1) for a, b in it]
 
 # tensor product of z-min per dimension
 def z0_tensor(qx, zs_phi, zs_psi):
@@ -110,7 +109,7 @@ def gridify_xs(j0, j1, xs, minx, maxx):
         jpow = 2 ** j
         grid_xs[j] = {}
         if j == j0:
-            iters = [xrange(int(jpow * minx[d]), int(jpow * maxx[d]) + 1) for d in range(dim)]
+            iters = [range(int(jpow * minx[d]), int(jpow * maxx[d]) + 1) for d in range(dim)]
             for zs in itt.product(*iters):
                 cond = (np.floor(jpow * xs) == zs).all(axis=1)
                 grid_xs[j][zs] = np.where(cond)
