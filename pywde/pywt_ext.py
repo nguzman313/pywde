@@ -10,8 +10,9 @@ def affine1d(poj, z, x):
 
 
 class Wavelet(pywt.Wavelet):
-    """Wrapper around pywt.Wavelet that defines support, phi, psi, phi_jz, psi_jz methods for wavelet and
-    corresponding duals if they are biorthogonal instead of orthogonal.
+    """Wrapper around pywt.Wavelet that defines support, phi, psi methods for wavelet and
+    corresponding duals if they are biorthogonal instead of orthogonal. The methods
+    work as
     """
     def __init__(self, wave_name):
         self.wave = pywt.Wavelet(wave_name)
@@ -44,7 +45,8 @@ class Wavelet(pywt.Wavelet):
     @staticmethod
     def calc_wavefuns(supports, wave):
         phi_support, psi_support = supports
-        phi, psi, _ = wave.wavefun(level=20)
+        phi, psi, _ = wave.wavefun(level=10)
+        print('len(phi)', len(phi))
         kind = 1 if wave.dec_len <= 4 else 2
         phi_fun = interp1d(np.linspace(*phi_support, num=len(phi)), phi, fill_value=0.0, bounds_error=False, kind=kind)
         phi_fun.support = phi_support

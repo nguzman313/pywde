@@ -22,6 +22,12 @@ class TestWavelet(unittest.TestCase):
         self.assertEqual((-3.0, 4.0), wave.psi.support)
         assert_array_almost_equal(np.array([0.0, 1.301367, -0.736155, -0.060386]), wave.psi(np.array([-3.01, 0.66, 1.2, 2.1])))
 
+    def test_ortho_db4(self):
+        wave = Wavelet('db4')
+        val_a = wave.psi(np.linspace(-4.0, 4.0, num=100))
+        val_b = wave.psi(np.linspace(-3.0, 5.0, num=100))
+        self.assertEqual(0.0, np.dot(val_a, val_b))
 
 if __name__ == '__main__':
-    unittest.main()
+    #unittest.main()
+    wave = Wavelet('db1')
