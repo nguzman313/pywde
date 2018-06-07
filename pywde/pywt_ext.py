@@ -8,17 +8,21 @@ import numpy as np
 def affine1d(poj, z, x):
     return poj * x - z
 
+def wavelist():
+    return pywt.wavelist()
 
 class Wavelet(pywt.Wavelet):
-    """Wrapper around pywt.Wavelet that defines support, phi, psi methods for wavelet and
-    corresponding duals if they are biorthogonal instead of orthogonal. The methods
-    work as
+    """Wrapper around pywt.Wavelet that defines support, phi, psi methods for the base wavelets and
+    corresponding duals. If they are orthogonal base and duals are the same. The methods
+    work on 1D numpy arrays iterating over elements. For consistency in terminology, use duals to
+    calculate coefficients and base to reconstruct the signal (e.g. eq (3.22) in
+    1992, Chui, Wang, "On Compactly Supported Spline Wavelets and a Duality Principle")
     """
     def __init__(self, wave_name):
         self.wave = pywt.Wavelet(wave_name)
         self.support = self.wave_support_info(self.wave)
-        self.phi, self.psi = self.calc_wavefuns(self.support['base'], self.wave)
-        self.phi_dual, self.psi_dual = self.calc_wavefuns(self.support['dual'], self.wave)
+        self.funs = {}
+        self.calc_wavefuns()
 
     @staticmethod
     def wave_support_info(pywt_wave):
@@ -34,22 +38,64 @@ class Wavelet(pywt.Wavelet):
             resp['base'] = (phi_support, psi_support)
             resp['dual'] = (phi_support, psi_support)
         elif pywt_wave.family_name == 'Biorthogonal':
-            phi_support = (1 - pywt_wave.dec_len // 2, pywt_wave.dec_len // 2)
-            psi_support = (1 - pywt_wave.dec_len // 2, pywt_wave.dec_len // 2)
-            resp['base'] = (phi_support, psi_support)
-            raise ValueError('pywt_wave family %s not known support' % pywt_wave.family_name)
+            # pywt uses Spline Wavelets
+            # base is the reconstruction family, dual the decomposition family
+            dec_vm = int(pywt_wave.name[6:])  # decomposition order
+            rec_vm = int(pywt_wave.name[4:5]) # reconstruction order
+            # support for lowpass in primal and dual as calculated by Mathematica
+            n1, n2 = (-dec_vm - (rec_vm - 1) //2 + (dec_vm % 2), dec_vm + (rec_vm - 1) // 2)
+            nd1, nd2 = (-(rec_vm  + 1)// 2, (rec_vm  + 1)// 2)
+            # from this, we can infer support for highpass for base and dual
+            resp['base'] = ((n1, n2), ((n1 - nd2 + 1)//2, (n2 - nd1 + 1)//2))
+            resp['dual'] = ((nd1, nd2), ((nd1 - n2 + 1)//2, (nd2 - n1 + 1)//2))
         else:
             raise ValueError('pywt_wave family %s not known support' % pywt_wave.family_name)
         return resp
 
     @staticmethod
-    def calc_wavefuns(supports, wave):
-        phi_support, psi_support = supports
-        phi, psi, _ = wave.wavefun(level=10)
-        print('len(phi)', len(phi))
-        kind = 1 if wave.dec_len <= 4 else 2
-        phi_fun = interp1d(np.linspace(*phi_support, num=len(phi)), phi, fill_value=0.0, bounds_error=False, kind=kind)
-        phi_fun.support = phi_support
-        psi_fun = interp1d(np.linspace(*psi_support, num=len(psi)), psi, fill_value=0.0, bounds_error=False, kind=kind)
-        psi_fun.support = psi_support
-        return (phi_fun, psi_fun)
+    def trim_zeros(coeffs):
+        nz = np.nonzero(coeffs)
+        return coeffs[np.min(nz):np.max(nz)+1]
+
+    def calc_wavefuns(self):
+        values = self.wave.wavefun(level=14)
+        phi_support_d, psi_support_d = self.support['base']
+        phi_support_r, psi_support_r = self.support['dual']
+        if len(values) == 5:
+            phi_d, psi_d, phi_r, psi_r, _ = values
+            # biorthogonal wavelets have zeros in pywt for some reason; we have to remove them
+            # to match the support
+            phi_d, psi_d, phi_r, psi_r = [self.trim_zeros(c) for c in [phi_d, psi_d, phi_r, psi_r]]
+        else:
+            phi_d, psi_d, _ = values
+            phi_r, psi_r = phi_d, psi_d
+        # reconstruction '_r' is the base
+        phi = self.calc_fun(phi_support_r, phi_r)
+        psi = self.calc_fun(psi_support_r, psi_r)
+        self.funs['base'] = (phi, psi)
+        # decomposition '_d' is the dual
+        phi = self.calc_fun(phi_support_d, phi_d)
+        psi = self.calc_fun(psi_support_d, psi_d)
+        self.funs['dual'] = (phi, psi)
+
+    @property
+    def phi_prim(self):
+        return self.funs['base'][0]
+
+    @property
+    def psi_prim(self):
+        return self.funs['base'][1]
+
+    @property
+    def phi_dual(self):
+        return self.funs['dual'][0]
+
+    @property
+    def psi_dual(self):
+        return self.funs['dual'][1]
+
+    @staticmethod
+    def calc_fun(support, values):
+        resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=1)
+        resp.support = support
+        return resp
