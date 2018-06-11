@@ -33,11 +33,11 @@ class WaveletDensityEstimator(object):
         return True
 
     def set_wavefuns(self, dim):
-        self.wave_funs = self.calc_wavefuns(dim, self.multi_supports['base'], self.wave)
-        self.dual_wave_funs = self.calc_wavefuns(dim, self.multi_supports['dual'], self.wave)
+        self.dec_wave_funs = self.calc_wavefuns(dim, self.multi_supports, self.wave, 'dual')
+        self.rec_wave_funs = self.calc_wavefuns(dim, self.multi_supports, self.wave, 'base')
 
     @staticmethod
-    def calc_wavefuns(dim, supports, wave):
+    def calc_wavefuns(dim, supports, wave, step):
         resp = {}
         phi_support, psi_support = supports
         phi, psi, _ = wave.wavefun(level=12)
@@ -70,7 +70,7 @@ class WaveletDensityEstimator(object):
             self.coeffs[j] = {}
             self.nums[j] = {}
         for ix, qx in qxs:
-            wavef = self.wave_funs[qx]
+            wavef = self.dec_wave_funs[qx]
             zs_min, zs_max = zs_range(wavef, self.minx, self.maxx, j)
             self.coeffs[j][qx] = {}
             self.nums[j][qx] = {}
@@ -94,7 +94,7 @@ class WaveletDensityEstimator(object):
             jpow2 = 2 ** j
             norm_j = 0.0
             for ix, qx in qxs:
-                wavef = self.dual_wave_funs[qx]
+                wavef = self.rec_wave_funs[qx]
                 for zs, coeff in self.coeffs[j][qx].iteritems():
                     num = self.nums[j][qx][zs]
                     coeff_t = self.thresholding(self.n, j - self.j0, num, coeff) if threshold else coeff
