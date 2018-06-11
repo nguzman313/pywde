@@ -52,7 +52,7 @@ class TestDb4(unittest.TestCase, WaveletCase):
 
     def test_psi_prim_values(self):
         assert_array_almost_equal(np.array([0.0, 1.301367, -0.736155, -0.060386]),
-                                  self.wave.psi_prim(np.array([-3.01, 0.66, 1.2, 2.1])))
+                                  self.wave.psi_prim(np.array([-3.01, 0.66, 1.2, 2.1])), 4)
 
 
 class TestBior24(unittest.TestCase, WaveletCase):

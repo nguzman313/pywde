@@ -1,15 +1,24 @@
 """
 Extensions to PyWavelets (pywt) to calculate wavelet values
 """
+import math
 import pywt
-from scipy.interpolate import interp1d
+import itertools as itt
 import numpy as np
+from scipy.interpolate import interp1d
 
-def affine1d(poj, z, x):
-    return poj * x - z
 
 def wavelist():
     return pywt.wavelist()
+
+def np_mult(cols):
+    if len(cols) == 1:
+        return cols[0]
+    if len(cols) == 2:
+        return np.multiply(*cols)
+    else:
+        return np.multiply(cols[0], np_mult(cols[1:]))
+
 
 class Wavelet(pywt.Wavelet):
     """Wrapper around pywt.Wavelet that defines support, phi, psi methods for the base wavelets and
@@ -79,23 +88,56 @@ class Wavelet(pywt.Wavelet):
         self.funs['dual'] = (phi, psi)
 
     @property
-    def phi_prim(self):
-        return self.funs['base'][0]
+    def phi_prim(self, ix=(1, 0)):
+        return self.fun_ix(self.funs['base'][0], ix)
 
     @property
-    def psi_prim(self):
-        return self.funs['base'][1]
+    def psi_prim(self, ix=(1, 0)):
+        return self.fun_ix(self.funs['base'][1], ix)
 
     @property
-    def phi_dual(self):
-        return self.funs['dual'][0]
+    def phi_dual(self, ix=(1, 0)):
+        return self.fun_ix(self.funs['dual'][0], ix)
 
     @property
-    def psi_dual(self):
-        return self.funs['dual'][1]
+    def psi_dual(self, ix=(1, 0)):
+        return self.fun_ix(self.funs['dual'][1], ix)
+
+    @staticmethod
+    def fun_ix(fun, ix):
+        """Given fun, returns new function fun(s * x + z), where (s, z) is a parametrisation in ix"""
+        s, z = ix
+        a, b = fun.support
+        f = lambda x: fun(s * x + z)
+        f.support = ((a - z)/s, (b - z)/s)
+        return f
 
     @staticmethod
     def calc_fun(support, values):
         resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=1)
         resp.support = support
         return resp
+
+class WaveletTensorProduct(object):
+    def __init__(self, wave_names):
+        self.dim = len(wave_names)
+        self.waves = [Wavelet(name) for name in wave_names]
+        self.qq = list(itt.product(range(2), repeat=self.dim))
+
+    def prim(self, ix):
+        return self.fun_ix('base', ix)
+
+    def dual(self, ix):
+        return self.fun_ix('dual', ix)
+
+    def fun_ix(self, what, ix):
+        qq, ss, zz = ix
+        ss2 = math.sqrt(np.prod(ss))
+        def f(xx):
+            cols = []
+            for i, q2 in enumerate(qq):
+                wave = self.waves[i].funs[what]
+                xs_proj = xx[:,i] # proj(xs, i)
+                cols.append(wave[q2](ss[i] * xs_proj - zz[i]))
+            return np_mult(tuple(cols)) * ss2
+        return f
