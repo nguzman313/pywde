@@ -8,11 +8,11 @@ class WaveletCase(object):
 
     def test_fun_support(self):
         a, b = self.fun.support
-        assert_array_almost_equal(np.zeros(6), self.fun(np.array([a - 0.5, a - 0.1, a, b, b + 0.1, b + 0.5])), 4)
+        assert_array_almost_equal(np.zeros(4), self.fun(np.array([a - 0.5, a - 0.05, b + 0.05, b + 0.5])), 4)
 
     def test_dual_support(self):
         a, b = self.fun_dual.support
-        assert_array_almost_equal(np.zeros(6), self.fun_dual(np.array([a - 0.5, a - 0.1, a, b, b + 0.1, b + 0.5])), 4)
+        assert_array_almost_equal(np.zeros(4), self.fun_dual(np.array([a - 0.5, a - 0.05, b + 0.05, b + 0.5])), 4)
 
     def test_fun_dual_integral(self):
         a1, b1 = self.fun.support
@@ -52,16 +52,16 @@ class TestDb4Psi(unittest.TestCase, WaveletCase):
                                   self.fun(np.array([-3.01, 0.66, 1.2, 2.1])), 4)
 
 
-class TestBior24PhiPrim(unittest.TestCase, WaveletCase):
+class TestBior13PhiPrim(unittest.TestCase, WaveletCase):
     def setUp(self):
-        wave = Wavelet('bior2.4')
+        wave = Wavelet('bior1.3')
         self.fun = wave.phi_prim
         self.fun_dual = wave.phi_dual
 
 
-class TestBior24PsiPrim(unittest.TestCase, WaveletCase):
+class TestBior13PsiPrim(unittest.TestCase, WaveletCase):
     def setUp(self):
-        wave = Wavelet('bior2.4')
+        wave = Wavelet('bior1.3')
         self.fun = wave.psi_prim
         self.fun_dual = wave.psi_dual
 
