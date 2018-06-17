@@ -124,25 +124,41 @@ class Wavelet(pywt.Wavelet):
 
 
 class WaveletTensorProduct(object):
-    def __init__(self, wave_names):
+    """
+    Tensor product wavelet in $R^d$. It supports similar or different wavelets in each dimension.
+
+        wave1 = WaveletTensorProduct(('db4',) * 3) # db4 in all 3 axes
+        wave2 = WaveletTensorProduct(('rbio2.4', 'rbio1.3', 'rbio3.5')) # three different spline wavelets
+    """
+    def __init__(self, wave_names, single_j=True):
+        self.single_j = single_j
         self.dim = len(wave_names)
         self.waves = [Wavelet(name) for name in wave_names]
         self.qq = list(itt.product(range(2), repeat=self.dim))
 
-    def prim(self, ix):
+    def prim(self, ix=None):
+        if ix is None:
+            # if ix is None, returns the scaling base at (1,0) in all dimensions
+            ix = ((0,) * self.dim, ((1,) * self.dim), ((0,) * self.dim))
         return self.fun_ix('base', ix)
 
-    def dual(self, ix):
+    def dual(self, ix=None):
+        if ix is None:
+            # if ix is None, returns the scaling dual at (1,0) in all dimensions
+            ix = ((0,) * self.dim, ((1,) * self.dim), ((0,) * self.dim))
         return self.fun_ix('dual', ix)
 
     def fun_ix(self, what, ix):
         qq, ss, zz = ix
         ss2 = math.sqrt(np.prod(ss))
+        support = [self.waves[i].support[what][q2] for i, q2 in enumerate(qq)]
         def f(xx):
             cols = []
             for i, q2 in enumerate(qq):
-                wave = self.waves[i].funs[what]
+                wave = self.waves[i].funs[what][q2]
                 xs_proj = xx[:,i] # proj(xs, i)
                 cols.append(wave[q2](ss[i] * xs_proj - zz[i]))
             return np_mult(tuple(cols)) * ss2
+        f.dim = self.dim
+        f.support = support
         return f
