@@ -20,11 +20,13 @@ def all_qx(dim):
     for wave_x, qx in enumerate(itt.product(range(2), repeat=dim)):
         yield wave_x, tuple(qx)
 
+
 def support_tensor(qx, phi_supp, psi_supp):
     return np.array([
         [(phi_supp if q == 0 else psi_supp)[0] for d,q in enumerate(qx)],
         [(phi_supp if q == 0 else psi_supp)[1] for d,q in enumerate(qx)]
     ])
+
 # all z-min, z-max ranges as tensor of ranges for phi and psi support
 def all_zs_tensor(zs_min, zs_max):
     it = zip(zs_min, zs_max)
@@ -81,26 +83,6 @@ def calculate_nearest_balls(k, xs):
     factor = calc_factor(xs.shape[0], dim, k)
     return np.power(k_near_radious, dim/2.0) * factor
 
-def wave_support_info(wave):
-    resp = {}
-    if wave.family_name in ['Daubechies', 'Symlets']:
-        phi_support = (0, wave.dec_len - 1)
-        psi_support = (1 - wave.dec_len // 2, wave.dec_len // 2)
-        resp['base'] = (phi_support, psi_support)
-        resp['dual'] = (phi_support, psi_support)
-    elif wave.family_name in ['Coiflets']:
-        phi_support = (1 - wave.dec_len // 2, wave.dec_len // 2)
-        psi_support = (1 - wave.dec_len // 2, wave.dec_len // 2)
-        resp['base'] = (phi_support, psi_support)
-        resp['dual'] = (phi_support, psi_support)
-    elif wave.family_name == 'Biorthogonal':
-        phi_support = (1 - wave.dec_len // 2, wave.dec_len // 2)
-        psi_support = (1 - wave.dec_len // 2, wave.dec_len // 2)
-        resp['base'] = (phi_support, psi_support)
-        raise ValueError('wave family %s not known support' % wave.family_name)
-    else:
-        raise ValueError('wave family %s not known support' % wave.family_name)
-    return resp
 
 def gridify_xs(j0, j1, xs, minx, maxx):
     grid_xs = {}
@@ -126,14 +108,11 @@ def gridify_xs(j0, j1, xs, minx, maxx):
                     grid_xs[j][tuple(zs.tolist())] = (where_xs[0][cond],)
     return grid_xs
 
-def zs_range(wavef, minx, maxx, j):
-    zs_min = np.floor((2 ** j) * minx - wavef.support[1]) - 1
-    zs_max = np.ceil((2 ** j) * maxx - wavef.support[0]) + 1
-    return zs_min, zs_max
 
 def calc_coeff(wave_tensor_qx, jpow, zs, xs, xs_balls):
     all_prods = wave_tensor_qx(jpow, zs, xs) * xs_balls[:,0]
     return all_prods.sum()
+
 
 def calc_num(suppf_tensor_qx, jpow, zs, xs):
     vals = suppf_tensor_qx(jpow, zs, xs)

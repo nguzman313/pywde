@@ -11,7 +11,7 @@ class SimpleWaveletDensityEstimator(object):
         self.wave = pywt.Wavelet(wave_name)
         self.j0 = j0
         self.j1 = j1 if j1 is not None else (j0 - 1)
-        self.multi_supports = wave_support_info(self.wave)
+        #self.multi_supports = wave_support_info(self.wave)
         self.pdf = None
         if thresholding is None:
             self.thresholding = lambda n, j, dn, c: c

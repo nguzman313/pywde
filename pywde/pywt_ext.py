@@ -12,14 +12,6 @@ from scipy.interpolate import interp1d
 def wavelist():
     return pywt.wavelist()
 
-def np_mult(cols):
-    if len(cols) == 1:
-        return cols[0]
-    if len(cols) == 2:
-        return np.multiply(*cols)
-    else:
-        return np.multiply(cols[0], np_mult(cols[1:]))
-
 def trim_zeros(coeffs):
     nz = np.nonzero(coeffs)
     return coeffs[np.min(nz):np.max(nz) + 1]
@@ -99,27 +91,37 @@ class Wavelet(pywt.Wavelet):
 
     @property
     def phi_prim(self, ix=(1, 0)):
-        return self.fun_ix(self.funs['base'][0], ix)
+        return self.fun_ix('base', (0, ix[0], ix[1]))
 
     @property
     def psi_prim(self, ix=(1, 0)):
-        return self.fun_ix(self.funs['base'][1], ix)
+        return self.fun_ix('base', (1, ix[0], ix[1]))
 
     @property
     def phi_dual(self, ix=(1, 0)):
-        return self.fun_ix(self.funs['dual'][0], ix)
+        return self.fun_ix('dual', (0, ix[0], ix[1]))
 
     @property
     def psi_dual(self, ix=(1, 0)):
-        return self.fun_ix(self.funs['dual'][1], ix)
+        return self.fun_ix('dual', (1, ix[0], ix[1]))
 
-    @staticmethod
-    def fun_ix(fun, ix):
-        """Given fun, returns new function fun(s * x + z), where (s, z) is a parametrisation in ix"""
-        s, z = ix
+    def fun_ix(self, what, ix=None):
+        if ix is None:
+            ix = (0, 1, 0)
+        q, s, z = ix
+        fun = self.funs[what][q]
         a, b = fun.support
         f = lambda x: fun(s * x + z)
         f.support = ((a - z)/s, (b - z)/s)
+        return f
+
+    def supp_ix(self, what, ix=None):
+        if ix is None:
+            ix = (0, 1, 0)
+        q, s, z = ix
+        fun = self.funs[what][q]
+        a, b = fun.support
+        f = lambda x: (lambda v: np.less(a, v) & np.less(v,b))(s * x + z)
         return f
 
 
@@ -130,8 +132,7 @@ class WaveletTensorProduct(object):
         wave1 = WaveletTensorProduct(('db4',) * 3) # db4 in all 3 axes
         wave2 = WaveletTensorProduct(('rbio2.4', 'rbio1.3', 'rbio3.5')) # three different spline wavelets
     """
-    def __init__(self, wave_names, single_j=True):
-        self.single_j = single_j
+    def __init__(self, wave_names):
         self.dim = len(wave_names)
         self.waves = [Wavelet(name) for name in wave_names]
         self.qq = list(itt.product(range(2), repeat=self.dim))
@@ -151,14 +152,34 @@ class WaveletTensorProduct(object):
     def fun_ix(self, what, ix):
         qq, ss, zz = ix
         ss2 = math.sqrt(np.prod(ss))
-        support = [self.waves[i].support[what][q2] for i, q2 in enumerate(qq)]
+        support = [self.waves[i].support[what][qq[i]] for i in range(self.dim)]
         def f(xx):
-            cols = []
-            for i, q2 in enumerate(qq):
-                wave = self.waves[i].funs[what][q2]
-                xs_proj = xx[:,i] # proj(xs, i)
-                cols.append(wave[q2](ss[i] * xs_proj - zz[i]))
-            return np_mult(tuple(cols)) * ss2
+            resp = None
+            for i in range(self.dim):
+                col_i = self.waves[i].fun_ix(what, (qq[i], ss[i], zz[i]))(xx[:,i])
+                if resp is None:
+                    resp = col_i
+                else:
+                    resp = np.multiply(resp, col_i)
+            return resp * ss2
         f.dim = self.dim
         f.support = support
         return f
+
+    def supp_ix(self, what, ix):
+        qq, ss, zz = ix
+        def f(xx):
+            resp = None
+            for i in range(self.dim):
+                col_i = self.waves[i].supp_ix(what, (qq[i], ss[i], zz[i]))(xx[:,i])
+                if resp is None:
+                    resp = col_i
+                else:
+                    resp = resp & col_i
+            return resp.astype(int)
+        return f
+
+    def zs_range(self, what, minx, maxx, qs, js):
+        zs_min = np.floor(np.array([(2 ** js[i]) * minx[i] - self.waves[i].support[what][qs[i]][1] for i in range(self.dim)])) - 1
+        zs_max = np.floor(np.array([(2 ** js[i]) * maxx[i] - self.waves[i].support[what][qs[i]][0] for i in range(self.dim)])) + 1
+        return zs_min, zs_max
