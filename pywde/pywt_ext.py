@@ -154,9 +154,10 @@ class WaveletTensorProduct(object):
         ss2 = math.sqrt(np.prod(ss))
         support = [self.waves[i].support[what][qq[i]] for i in range(self.dim)]
         def f(xx):
+            proj = self.proj_fun(xx)
             resp = None
             for i in range(self.dim):
-                col_i = self.waves[i].fun_ix(what, (qq[i], ss[i], zz[i]))(xx[:,i])
+                col_i = self.waves[i].fun_ix(what, (qq[i], ss[i], zz[i]))(proj(i))
                 if resp is None:
                     resp = col_i
                 else:
@@ -169,15 +170,23 @@ class WaveletTensorProduct(object):
     def supp_ix(self, what, ix):
         qq, ss, zz = ix
         def f(xx):
+            proj = self.proj_fun(xx)
             resp = None
             for i in range(self.dim):
-                col_i = self.waves[i].supp_ix(what, (qq[i], ss[i], zz[i]))(xx[:,i])
+                col_i = self.waves[i].supp_ix(what, (qq[i], ss[i], zz[i]))(proj(i))
                 if resp is None:
                     resp = col_i
                 else:
                     resp = resp & col_i
             return resp.astype(int)
         return f
+
+    @staticmethod
+    def proj_fun(xx):
+        if type(xx) == tuple or type(xx) == list:
+            return lambda i: xx[i]
+        else:
+            return lambda i: xx[:, i]
 
     def zs_range(self, what, minx, maxx, qs, js):
         zs_min = np.floor(np.array([(2 ** js[i]) * minx[i] - self.waves[i].support[what][qs[i]][1] for i in range(self.dim)])) - 1

@@ -85,7 +85,10 @@ class WaveletDensityEstimator(object):
                     xs_sum += vals
             return norm_j
         def pdffun(coords):
-            xs_sum = np.zeros(self.n, dtype=np.float64)
+            if type(coords) == tuple or type(coords) == list:
+                xs_sum = np.zeros(coords[0].shape, dtype=np.float64)
+            else:
+                xs_sum = np.zeros(coords.shape[0], dtype=np.float64)
             qq = self.wave.qq
             norm_const = pdffun_j(coords, xs_sum, 0, qq[0:1], False)
             for j in range(self.delta_j):
