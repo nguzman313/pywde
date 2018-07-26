@@ -1,17 +1,28 @@
 import math
 import numpy as np
 import itertools as itt
-from scipy.interpolate import interp1d
-from functools import partial
 from .common import all_zs_tensor
 from sklearn.neighbors import BallTree
-from scipy.special import gamma
+from scipy.special import gamma, loggamma
 
 from .pywt_ext import WaveletTensorProduct
 
 
+def log_factorial(n):
+    if n <= 1:
+        return 0
+    return np.log(np.array(range(2, n + 1))).sum()
+
+def log_riemann_volume_class(k):
+    "Total Riemannian volume in model class with k parameters"
+    return math.log(2) + k/2 * math.log(math.pi) - loggamma(k/2)
+
+def log_riemann_volume_param(k, n):
+    "Riemannian volume around estimate with k parameters for n samples"
+    return (k/2) * math.log(2 * math.pi / n)
+
 class WaveletDensityEstimator(object):
-    def __init__(self, waves, k=1, delta_j=0, thresholding=None):
+    def __init__(self, waves, k=1, delta_j=0):
         """
         Builds a shape-preserving estimator based on square root and nearest neighbour distance.
 
@@ -25,11 +36,7 @@ class WaveletDensityEstimator(object):
         self.jj0 = np.array([wave_desc[1] for wave_desc in waves])
         self.delta_j = delta_j + 1
         self.pdf = None
-        # TODO: move into `waves`
-        if thresholding is None:
-            self.thresholding = lambda n, j, dn, c: c
-        else:
-            self.thresholding = thresholding
+        self.thresholding = None
 
     def fit(self, xs):
         "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
@@ -40,6 +47,7 @@ class WaveletDensityEstimator(object):
         self.n = xs.shape[0]
         self.calc_coefficients(xs)
         self.pdf = self.calc_pdf()
+        self.name = '%s, n=%d, j0=%s, Dj=%d' % (self.wave.name, self.n, str(self.jj0), self.delta_j)
         return True
 
     def calc_coefficients(self, xs):
@@ -75,11 +83,14 @@ class WaveletDensityEstimator(object):
             jj = self._jj(j)
             jpow2 = 2 ** jj
             norm_j = 0.0
+            if self.thresholding and threshold:
+                th_fun = self.thresholding
+            else:
+                th_fun = lambda n, j, dn, c: c
             for qx in qxs:
                 for zs, coeff in self.coeffs[j][qx].items():
-                    # num = self.nums[j][qx][zs]
-                    # TODO: self.thresholding(self.n, j, num, coeff) if threshold and self.thresholding else coeff
-                    coeff_t = coeff
+                    num = self.nums[j][qx][zs]
+                    coeff_t = th_fun(self.n, j, num, coeff)
                     norm_j += coeff_t * coeff_t
                     vals = coeff_t * self.wave.fun_ix('base', (qx, jpow2, zs))(coords)
                     xs_sum += vals
@@ -111,5 +122,51 @@ class WaveletDensityEstimator(object):
         factor = self.calc_factor()
         return np.power(k_near_radious, self.wave.dim / 2.0) * factor
 
+    def mdl(self, xs):
+        alphas, betas = self.k_range()
+        best = (float('inf'), None, None)
+        num_betas = len(betas)
+        for betas_num, th_value in enumerate(betas):
+            if th_value == 0.0:
+                continue
+            k = alphas + (num_betas - betas_num)
+            penalty = log_riemann_volume_class(k) - log_riemann_volume_param(k, self.n)
+            if penalty < 0:
+                print('neg')
+                continue
+            self.thresholding = self.calc_hard_threshold_fun(betas_num, th_value)
+            self.pdf = self.calc_pdf()
+            val = - np.log(self.pdf(xs)).sum() + penalty
+            print(num_betas - betas_num, th_value, val, penalty)
+            if val < best[0]:
+                best = (val, self.thresholding, self.pdf)
+                print('>>>>', self.thresholding.__doc__, val)
+        _, self.thresholding, self.pdf = best
 
+    def k_range(self):
+        "returns range of valid k (parameters) value"
+        # it cannot be greater than number of samples
+        # it cannot be greater than the number of coefficients
+        qq = self.wave.qq
+        alphas = len(self.coeffs[0][qq[0]])
+        coeffs = []
+        for j in range(self.delta_j):
+            vs = itt.chain.from_iterable([self.coeffs[j][qx].values() for qx in qq[1:]])
+            coeffs += [(math.fabs(value) / math.sqrt(j + 1)) for value in vs]
+        return alphas, sorted(coeffs)
 
+    def calc_hard_threshold_fun(self, betas_num, th_value):
+        def soft_th(n, j, dn, coeff):
+            lvl_t = th_value * math.sqrt(j + 1)
+            if coeff < 0:
+                if -coeff < lvl_t:
+                    return 0
+                else:
+                    return coeff + lvl_t
+            else:
+                if coeff < lvl_t:
+                    return 0
+                else:
+                    return coeff - lvl_t
+        soft_th.__doc__ = "Soft threshold at %g (index %d)" % (th_value, betas_num)
+        return soft_th

@@ -136,6 +136,7 @@ class WaveletTensorProduct(object):
         self.dim = len(wave_names)
         self.waves = [Wavelet(name) for name in wave_names]
         self.qq = list(itt.product(range(2), repeat=self.dim))
+        self.name = 'x'.join(wave_names)
 
     def prim(self, ix=None):
         if ix is None:
