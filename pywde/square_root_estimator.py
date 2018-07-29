@@ -126,6 +126,7 @@ class WaveletDensityEstimator(object):
         alphas, betas = self.k_range()
         best = (float('inf'), None, None)
         num_betas = len(betas)
+        self.mld_data = {'k_betas': [], 'logLL': [], 'MLD_penalty': []}
         for betas_num, th_value in enumerate(betas):
             if th_value == 0.0:
                 continue
@@ -136,11 +137,16 @@ class WaveletDensityEstimator(object):
                 continue
             self.thresholding = self.calc_hard_threshold_fun(betas_num, th_value)
             self.pdf = self.calc_pdf()
-            val = - np.log(self.pdf(xs)).sum() + penalty
+            logLL = - np.log(self.pdf(xs)).sum()
+            val = logLL + penalty
             print(num_betas - betas_num, th_value, val, penalty)
+            self.mld_data['k_betas'].append(num_betas - betas_num)
+            self.mld_data['logLL'].append(logLL)
+            self.mld_data['MLD_penalty'].append(penalty)
             if val < best[0]:
                 best = (val, self.thresholding, self.pdf)
                 print('>>>>', self.thresholding.__doc__, val)
+        self.mld_best = best
         _, self.thresholding, self.pdf = best
 
     def k_range(self):
