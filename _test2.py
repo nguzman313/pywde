@@ -236,41 +236,39 @@ def grid_as_vector(n):
     return np.meshgrid(x, y)
 
 
+def plot_wde(wde, fname, title):
+    print('Plotting %s' % fname)
+    grid_n = 200
+    xx, yy = grid_as_vector(grid_n)
+    zz = wde.pdf((xx, yy))
 
-wde = WaveletDensityEstimator((('db2', 0),('db2', 0)) , k=1, delta_j=3) # bior3.7
+    zz_sum = zz.sum() / grid_n / grid_n  # not always near 1
+
+    fig = plt.figure()
+    ax = fig.gca(projection='3d')
+    ax.plot_surface(xx, yy, zz / zz_sum, edgecolors='k', linewidth=0.5, cmap=cm.get_cmap('BuGn'))
+    ax.set_title(wde.name)
+    plt.savefig(fname)
+    plt.close()
+    print('%s saved' % fname)
+
+
+wde = WaveletDensityEstimator((('db4', 0),('db4', 0)) , k=1, delta_j=3) # bior3.7
 dist = dist_from_code('mult')
 data = dist.rvs(2000)
 print('Estimating')
 wde.fit(data)
-## print('COEFFICIENTS = ', wde.coeffs)
-
-# alphas, betas = wde.k_range()
-# print('alphas', alphas)
-# #print('betas', len(betas), 'min=', betas[0], 'max=', betas[-1])
-#
-# betas_pos = [v for v in betas if v > 0]
-# print('betas', len(betas_pos), ' (%d)' % len(betas), ', min=', betas_pos[0], ', max=', betas_pos[-1])
-#
-# # fig, [ax1, ax2] = plt.subplots(1, 2, figsize=(10,10))
-# # ax1.hist(betas_pos)
-# # ax2.hist(np.log(np.array(betas_pos)))
-# # plt.show()
-# #
-# # raise KeyboardInterrupt("bailing out")
-#
-# wde.mdl(data)
-# print(wde.thresholding.__doc__)
-
-print('Plotting')
-grid_n = 200
-xx, yy = grid_as_vector(grid_n)
-zz = wde.pdf((xx, yy))
-
-zz_sum = zz.sum() / grid_n / grid_n # not always near 1
-
-fig = plt.figure()
-ax = fig.gca(projection='3d')
-ax.plot_surface(xx, yy, zz / zz_sum, edgecolors='k', linewidth=0.5, cmap=cm.get_cmap('BuGn'))
-ax.set_title(wde.name)
-plt.show()
-plt.savefig('bior3.7.png')
+plot_wde(wde, 'mult-db4-orig.png', wde.name)
+print('Estimating with MDL')
+wde.mdlfit(data)
+plot_wde(wde, 'mult-db4-mdl.png', wde.name)
+ranking = np.array(wde.ranking)
+print('>> shape: ', ranking.shape)
+pos_min = np.argmin(ranking[:,3])
+plt.figure(figsize=(10,4))
+plt.plot(ranking[:,0], ranking[:,3])
+plt.xlabel('# coefficients')
+plt.ylabel('MDL')
+plt.savefig('mult-mdl-curve.png')
+plt.close()
+print('Done')

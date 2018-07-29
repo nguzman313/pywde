@@ -38,14 +38,17 @@ class WaveletDensityEstimator(object):
         self.pdf = None
         self.thresholding = None
 
-    def fit(self, xs):
-        "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
+    def _fitinit(self, xs):
         if self.wave.dim != xs.shape[1]:
             raise ValueError("Expected data with %d dimensions, got %d" % (self.wave.dim, xs.shape[1]))
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
         self.n = xs.shape[0]
         self.calc_coefficients(xs)
+
+    def fit(self, xs):
+        "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
+        self._fitinit(xs)
         self.pdf = self.calc_pdf()
         self.name = '%s, n=%d, j0=%s, Dj=%d' % (self.wave.name, self.n, str(self.jj0), self.delta_j)
         return True
@@ -122,6 +125,86 @@ class WaveletDensityEstimator(object):
         factor = self.calc_factor()
         return np.power(k_near_radious, self.wave.dim / 2.0) * factor
 
+    def mdlfit(self, xs):
+        self._fitinit(xs)
+        best_tuple = self.calc_pdf_mdl(xs)
+        betas_num = best_tuple[0]
+        th_value = best_tuple[4]
+        self.thresholding = self.calc_hard_threshold_fun(betas_num, th_value)
+        self.pdf = self.calc_pdf()
+        self.name = '%s, n=%d, j0=%s, Dj=%d [%s]' % (self.wave.name, self.n, str(self.jj0), self.delta_j, self.thresholding.__doc__)
+        return True
+
+    def calc_pdf_mdl(self, xs):
+        qq = self.wave.qq
+        num_alphas = len(ifpos(self.coeffs[0][qq[0]].values()))
+        betas = []
+        for j in range(self.delta_j):
+            for qx in qq[1:]:
+                for zs, v in self.coeffs[j][qx].items():
+                    if math.fabs(v) == 0:
+                        continue
+                    # NOTE threshold formula inverted below
+                    v_th = math.fabs(v) / math.sqrt(j + 1)
+                    betas.append((j, qx, zs, v, v_th))
+        betas.sort(key=lambda tt: -tt[4])
+        # calculate log likelihood incrementally starting from alphas and then
+        # adding 1 beta coefficient at a time
+        if type(xs) == tuple or type(xs) == list:
+            xs_sum = np.zeros(xs[0].shape, dtype=np.float64)
+        else:
+            xs_sum = np.zeros(xs.shape[0], dtype=np.float64)
+        # alphas
+        norm = 0.0
+        jj = self._jj(0)
+        jpow2 = 2 ** jj
+        ranking = []
+        for zs, coeff in self.coeffs[0][qq[0]].items():
+            num = self.nums[0][qq[0]][zs]
+            norm += coeff * coeff
+            vals = coeff * self.wave.fun_ix('base', (qq[0], jpow2, zs))(xs)
+            xs_sum += vals
+        pdf_for_xs = (xs_sum * xs_sum)/norm
+        logLL = - np.log(pdf_for_xs).sum()
+        k = num_alphas
+        penalty = log_riemann_volume_class(k) - log_riemann_volume_param(k, self.n)
+        rank_tuple = (num_alphas, logLL, penalty, logLL + penalty, 0)
+        best_tuple = rank_tuple
+        #print(rank_tuple)
+        ranking.append(rank_tuple)
+        for a_beta in betas:
+            j, qx, zs, coeff, th = a_beta
+            jj = self._jj(j)
+            jpow2 = 2 ** jj
+            # NOTE we just pass the coefficient, i.e. it is hard thresholding
+            norm += coeff * coeff
+            vals = coeff * self.wave.fun_ix('base', (qx, jpow2, zs))(xs)
+            xs_sum += vals
+            # now sum
+            pdf_for_xs = (xs_sum * xs_sum)/norm
+            logLL = - np.log(pdf_for_xs).sum()
+            k += 1
+            penalty = log_riemann_volume_class(k) - log_riemann_volume_param(k, self.n)
+            rank_tuple = (k, logLL, penalty, logLL + penalty, th)
+            if rank_tuple[3] < best_tuple[3]:
+                best_tuple = rank_tuple
+            #print(rank_tuple)
+            ranking.append(rank_tuple)
+        self.ranking = ranking
+        return best_tuple
+
+    def k_range(self):
+        "returns range of valid k (parameters) value"
+        # it cannot be greater than number of samples
+        # it cannot be greater than the number of coefficients
+        qq = self.wave.qq
+        alphas = len(ifpos(self.coeffs[0][qq[0]]))
+        coeffs = []
+        for j in range(self.delta_j):
+            vs = itt.chain.from_iterable([self.coeffs[j][qx].values() for qx in qq[1:]])
+            coeffs += [(math.fabs(value) / math.sqrt(j + 1)) for value in vs]
+        return alphas, sorted(coeffs)
+
     def mdl(self, xs):
         alphas, betas = self.k_range()
         best = (float('inf'), None, None)
@@ -154,7 +237,7 @@ class WaveletDensityEstimator(object):
         # it cannot be greater than number of samples
         # it cannot be greater than the number of coefficients
         qq = self.wave.qq
-        alphas = len(self.coeffs[0][qq[0]])
+        alphas = len(ifpos(self.coeffs[0][qq[0]]))
         coeffs = []
         for j in range(self.delta_j):
             vs = itt.chain.from_iterable([self.coeffs[j][qx].values() for qx in qq[1:]])
@@ -162,17 +245,20 @@ class WaveletDensityEstimator(object):
         return alphas, sorted(coeffs)
 
     def calc_hard_threshold_fun(self, betas_num, th_value):
-        def soft_th(n, j, dn, coeff):
+        def hard_th(n, j, dn, coeff):
             lvl_t = th_value * math.sqrt(j + 1)
             if coeff < 0:
                 if -coeff < lvl_t:
                     return 0
                 else:
-                    return coeff + lvl_t
+                    return coeff
             else:
                 if coeff < lvl_t:
                     return 0
                 else:
-                    return coeff - lvl_t
-        soft_th.__doc__ = "Soft threshold at %g (index %d)" % (th_value, betas_num)
-        return soft_th
+                    return coeff
+        hard_th.__doc__ = "Hard threshold at %g (index %d)" % (th_value, betas_num)
+        return hard_th
+
+def ifpos(vs):
+    return [v for v in vs if math.fabs(v) > 0]
