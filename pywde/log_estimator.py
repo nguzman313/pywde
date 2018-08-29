@@ -1,4 +1,10 @@
 import math
+
+# E ** (EGamma - 1)
+# EGamma : Euler's gamma constant
+CONST = 0.655219925816103568558124041375857597804832207694139862874
+
+import math
 import numpy as np
 import itertools as itt
 from .common import all_zs_tensor
@@ -21,12 +27,6 @@ def log_riemann_volume_param(k, n):
     "Riemannian volume around estimate with k parameters for n samples"
     return (k/2) * math.log(2 * math.pi / n)
 
-class WParams(object):
-    def __init__(self, wave):
-        self.wave = wave
-    def calc_indexes(self):
-        pass
-
 class WaveletDensityEstimator(object):
     def __init__(self, waves, k=1, delta_j=0):
         """
@@ -41,25 +41,14 @@ class WaveletDensityEstimator(object):
         self.k = k
         self.jj0 = np.array([wave_desc[1] for wave_desc in waves])
         self.delta_j = delta_j
-        self.wave_series = None
         self.pdf = None
         self.thresholding = None
-        self.params = None
 
-    def _fitinit(self, xs, cv=None):
+    def _fitinit(self, xs):
         if self.wave.dim != xs.shape[1]:
             raise ValueError("Expected data with %d dimensions, got %d" % (self.wave.dim, xs.shape[1]))
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
-        if cv is None:
-            self.params = WParams(self.wave)
-            self.params.calc_indexes()
-        else:
-            self.params = []
-            for k in range(cv):
-                wparams = WParams(self.wave)
-                wparams.calc_indexes()
-                self.params.append(wparams)
         self.n = xs.shape[0]
         self.calc_coefficients(xs)
 
@@ -166,7 +155,7 @@ class WaveletDensityEstimator(object):
                     num = self.nums[j][qx][zs]
                     # NOTE threshold formula inverted below
                     v_th = math.fabs(v) / math.sqrt(j + 1)
-                    betas.append((j, qx, zs, v, v_th, True)) ## num > GN_NUM
+                    betas.append((j, qx, zs, v, v_th, num > GN_NUM)) ## num > GN_NUM
         betas.sort(key=lambda tt: (not tt[5], -tt[4]))
         # calculate log likelihood incrementally starting from alphas and then
         # adding 1 beta coefficient at a time
@@ -192,7 +181,7 @@ class WaveletDensityEstimator(object):
         best_tuple = rank_tuple
         #print(rank_tuple)
         ranking.append(rank_tuple)
-        for a_beta in betas[:self.n]:
+        for a_beta in betas:
             j, qx, zs, coeff, th, num_gt = a_beta
             if not num_gt:
                 continue
@@ -258,7 +247,7 @@ class WaveletDensityEstimator(object):
         betas_num = best_tuple[0]
         th_value = best_tuple[4]
         def hard_th(n, j, num, coeff):
-            if True: #num > GN_NUM:
+            if num > GN_NUM:
                 lvl_t = th_value * math.sqrt(j + 1)
             else:
                 lvl_t = 0.0

@@ -34,6 +34,7 @@ class TestDb2Phi(unittest.TestCase, WaveletCase):
         assert_array_almost_equal(np.array([1.3660254037844386, -0.3660254037844386]),
                                   self.fun(np.array([1.0, 2.0])), 4)
 
+
 class TestDb2Psi(unittest.TestCase, WaveletCase):
     def setUp(self):
         wave = Wavelet('db2')

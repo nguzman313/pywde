@@ -21,13 +21,17 @@ def calc_fun(support, values):
     resp.support = support
     return resp
 
+_RE1 = re.compile('(db|sym)([0-9]+)')
 _RE = re.compile('(rbio|bior)([0-9]+)[.]([0-9]+)')
+_RESOLUTION_1D = 14
 
 def wave_support_info(pywt_wave):
     resp = {}
     if pywt_wave.family_name in ['Daubechies', 'Symlets']:
-        phi_support = (0, pywt_wave.dec_len - 1)
-        psi_support = (1 - pywt_wave.dec_len // 2, pywt_wave.dec_len // 2)
+        match = _RE1.match(pywt_wave.name)
+        vm = int(match.group(2))
+        phi_support = (0, 2 * vm - 1)
+        psi_support = (1 - vm, vm)
         resp['base'] = (phi_support, psi_support)
         resp['dual'] = (phi_support, psi_support)
     elif pywt_wave.family_name in ['Coiflets']:
@@ -54,7 +58,7 @@ def wave_support_info(pywt_wave):
     return resp
 
 def calc_wavefuns(pywt_wave, support):
-    values = pywt_wave.wavefun(level=14)
+    values = pywt_wave.wavefun(level=_RESOLUTION_1D)
     phi_support_r, psi_support_r = support['base']
     phi_support_d, psi_support_d = support['dual']
     if len(values) == 5:
@@ -106,6 +110,18 @@ class Wavelet(pywt.Wavelet):
         return self.fun_ix('dual', (1, ix[0], ix[1]))
 
     def fun_ix(self, what, ix=None):
+        """
+        Returns wave function for given index.
+        :param what: Either 'base' or 'dual'; specify the system
+        :param ix: the index within the system. Defined as a triple (q, s, z),
+            q : either 0=scaling, 1=mother wavelet
+            s : scale, usually a power of two (2^j)
+            z : offset for given scale
+            It is optional, and returns the standard scaling wave at q=1, z=0 for the system
+        :return: function object (callable), which can operate over numpy arrays; the
+            function object will have an attribute .support with the support at given
+            scale 's' and translation 'z'
+        """
         if ix is None:
             ix = (0, 1, 0)
         q, s, z = ix
@@ -116,13 +132,43 @@ class Wavelet(pywt.Wavelet):
         return f
 
     def supp_ix(self, what, ix=None):
+        """
+        Returns an indicator function for `fun_ix` with same parameters that operate over numpy arrays
+        :param what: Either 'base' or 'dual'
+        :param ix: See `fun_ix`
+        :return: function object (callable) that is 1 is inside support, 0 otherwise
+        """
         if ix is None:
             ix = (0, 1, 0)
         q, s, z = ix
         fun = self.funs[what][q]
         a, b = fun.support
-        f = lambda x: (lambda v: np.less(a, v) & np.less(v,b))(s * x + z)
+        f = lambda x: (lambda v: np.less(a, v) & np.less(v, b))(s * x + z)
         return f
+
+    def zrange(self, what, xrange, ix=None):
+        """
+        Returns the range of z values that cover an interval (minx, maxx) for given index ix in system what
+        :param what: Either 'base' or 'dual'
+        :param xrange: tuple with (min, max) values for x
+        :param ix: See `fun_ix`
+        :return: tuple
+        """
+        if ix is None:
+            ix = (0, 1, 0)
+        q, s, z = ix
+        fun = self.funs[what][q]
+        a, b = fun.support
+        minx, maxx = xrange[0], xrange[1]
+        # minx <= x <= maxx
+        # a <= s * x + z <= b
+        # a - s * x <= z <= b - s * x
+        # a - s * maxx <= z <= b - s * maxx
+        # a - s * minx <= z <= b - s * minx
+        # Hence, a - s * maxx <= z <= b - s * minx
+        zmin = math.floor(a - s * maxx)
+        zmax = math.ceil(b - s * minx)
+        return (zmin, zmax)
 
 
 class WaveletTensorProduct(object):
@@ -190,6 +236,6 @@ class WaveletTensorProduct(object):
             return lambda i: xx[:, i]
 
     def zs_range(self, what, minx, maxx, qs, js):
-        zs_min = np.floor(np.array([(2 ** js[i]) * minx[i] - self.waves[i].support[what][qs[i]][1] for i in range(self.dim)])) - 1
-        zs_max = np.floor(np.array([(2 ** js[i]) * maxx[i] - self.waves[i].support[what][qs[i]][0] for i in range(self.dim)])) + 1
+        zs_min = np.floor(np.array([self.waves[i].support[what][qs[i]][0] - (2 ** js[i]) * maxx[i] for i in range(self.dim)])) - 1
+        zs_max = np.floor(np.array([self.waves[i].support[what][qs[i]][1] - (2 ** js[i]) * minx[i] for i in range(self.dim)])) + 1
         return zs_min, zs_max
