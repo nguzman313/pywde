@@ -348,8 +348,8 @@ def plot_wde(wde, fname, dist):
     print('Plotting %s' % fname)
     hd, corr_factor = hellinger_distance(dist, wde)
     print(wde.name, 'HD=', hd)
-    return
-    grid_n = 70
+    ##return
+    grid_n = 40 ## 70
     xx, yy = grid_as_vector(grid_n)
     zz = wde.pdf((xx, yy)) / corr_factor
 
@@ -366,7 +366,7 @@ def plot_wde(wde, fname, dist):
 def plot_kde(kde, fname, dist):
     print('Plotting %s' % fname)
     hd, corr_factor = hellinger_distance(dist, kde)
-    grid_n = 70
+    grid_n = 40 ## 70
     xx, yy = grid_as_vector(grid_n)
     grid2 = np.array((xx.flatten(), yy.flatten())).T
     vals = kde.pdf(grid2)
@@ -406,20 +406,19 @@ def hellinger_distance(dist, dist_est):
     return err, corr_factor
 
 def fname(what, dist_name, wave_name, delta_j):
-    return '%s-%s-%d-%s.png' % (dist_name, wave_name, delta_j, what)
+    return 'pngs/%s-%s-%d-%s.png' % (dist_name, wave_name, delta_j, what)
 
 def mdl_with(dist_name, wave_name, delta_j):
     wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=1, delta_j=delta_j) # bior3.7
     dist = dist_from_code(dist_name)
     #plot_dist(fname('true', dist_name, wave_name, delta_j), dist)
-    data = dist.rvs(500) #2000
+    data = dist.rvs(2000)
     print('Estimating')
     wde.fit(data)
     plot_wde(wde, fname('orig', dist_name, wave_name, delta_j), dist)
     print('Estimating with MDL')
     wde.mdlfit(data)
     plot_wde(wde, fname('mdl', dist_name, wave_name, delta_j), dist)
-    return
     ranking = np.array(wde.ranking)
     print('>> shape: ', ranking.shape)
     #pos_min = np.argmin(ranking[:,3])
@@ -433,6 +432,7 @@ def mdl_with(dist_name, wave_name, delta_j):
     plt.ylabel('MDL')
     plt.savefig(fname('mdl-curve', dist_name, wave_name, delta_j))
     plt.close()
+    return
     print('Estimating KDE')
     kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
     plot_kde(kde, fname('kde', dist_name, wave_name, delta_j), dist)
@@ -443,7 +443,7 @@ def mdl_with(dist_name, wave_name, delta_j):
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-mdl_with('pyr1', 'db2', 5) ## bior2.8
+mdl_with('pyr1', 'db4', 5) ## bior2.8
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
