@@ -4,6 +4,7 @@ import itertools as itt
 from .common import all_zs_tensor
 from sklearn.neighbors import BallTree
 from scipy.special import gamma, loggamma
+from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
 
@@ -36,6 +37,7 @@ class WParams(object):
         self._calc_indexes()
         self.n = 0
         self.pdf = None
+        self.test = None
 
     def calc_coeffs(self, xs):
         self.n = xs.shape[0]
@@ -73,6 +75,13 @@ class WParams(object):
             norm_const += coeff * coeff
             xs_sum += vals
             yield key, (xs_sum * xs_sum) / norm_const
+
+    def calc1(self, key, tup, coords, norm):
+        j, qx, zs, jpow2 = key
+        jpow2 = np.array(jpow2)
+        coeff, num = tup
+        vals = coeff * self.wave.fun_ix('base', (qx, jpow2, zs))(coords)
+        return vals, norm + coeff*coeff
 
     def xs_sum_zeros(self, coords):
         if type(coords) == tuple or type(coords) == list:
@@ -137,37 +146,49 @@ class WaveletDensityEstimator(object):
             self.params = WParams(self)
             self.params.calc_coeffs(xs)
         else:
-            self.params = [WParams(self) for k in range(cv)]
+            self.params = []
+            k_len = int(xs.shape[0] / cv)
+            print('CV N=', xs.shape[0], 'cv=', cv, 'k-fold=', k_len, 'samples')
+            for k in range(cv):
+                wparams = WParams(self)
+                # note: wparams.coeffs.keys [indexes] will be the same because
+                # they are calculated based on minx,maxx not the training data
+                wparams.calc_coeffs(xs[:-k_len])
+                wparams.test = xs[-k_len:]
+                self.params.append(wparams)
+                xs = np.roll(xs, k_len, axis=0)
+                print('Fold', k, 'ready')
 
     def fit(self, xs):
         "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
+        print('Regular estimator')
+        t0 = datetime.now()
         self._fitinit(xs)
         self.pdf = self.params.calc_pdf(self.params.coeffs) ##self.calc_pdf()
-        self.name = '%s, n=%d, j0=%s, Dj=%d' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
-        return True
+        self.name = '%s, n=%d, j0=%s, Dj=%d FIT' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
+        print('secs=', (datetime.now() - t0).total_seconds())
 
-    def mdlfit(self, xs):
+    def mdlfit(self, xs, sorting_fun):
+        print('MDL estimator')
+        t0 = datetime.now()
         self._fitinit(xs)
-        self.calc_pdf_mdl(xs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
-        return True
+        self.calc_pdf_mdl(xs, sorting_fun)
+        self.name = '%s, n=%d, j0=%s, Dj=%d MDL' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
+        print('secs=', (datetime.now() - t0).total_seconds())
 
-    def calc_pdf_mdl(self, xs):
+    def calc_pdf_mdl(self, xs, sorting_fun):
         all_coeffs = list(self.params.coeffs.items())
-        def coeff_sort(key_tup):
-            key, tup = key_tup
-            j, qx, zs, jpow2 = key
-            coeff, num = tup
-            is_alpha = j == 0 and all([qi == 0 for qi in qx])
-            v_th = math.fabs(coeff) / math.sqrt(j + 1)
-            return (not is_alpha, -v_th, key)
-        all_coeffs.sort(key=coeff_sort)
+        all_coeffs.sort(key=sorting_fun)
         xs_sum = self.params.xs_sum_zeros(xs)
         k = 0
         keys = []
         ranking = []
         best_mdl = best_k = None
-        for key, pdf_for_xs in self.params.gen_pdf(xs_sum, all_coeffs[:self.params.n], xs):
+        norm_const = 0.0
+        for key, tup in all_coeffs[:self.params.n]:
+            vals, norm_const = self.params.calc1(key, tup, xs, norm_const)
+            xs_sum += vals
+            pdf_for_xs = (xs_sum * xs_sum) / norm_const
             j, qx, zs, jpow2 = key
             is_alpha = j == 0 and all([qi == 0 for qi in qx])
             k += 1
@@ -185,3 +206,111 @@ class WaveletDensityEstimator(object):
         coeffs = {key:self.params.coeffs[key] for key in keys[:best_k]}
         self.pdf = self.params.calc_pdf(coeffs)
         self.ranking = ranking
+
+    def cv2fit(self, xs, cv):
+        print('CV_2 estimator')
+        t0 = datetime.now()
+        self._fitinit(xs, cv=cv)
+        final_keys, ranking = self.calc_pdf_cv2()
+        self._fitinit(xs)
+        coeffs = {key:self.params.coeffs[key] for key in final_keys}
+        self.pdf = self.params.calc_pdf(coeffs)
+        self.ranking = ranking
+        self.name = '%s, n=%d, j0=%s, Dj=%d CV_2' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
+        print('secs=', (datetime.now() - t0).total_seconds())
+
+    def calc_pdf_cv2(self):
+        cv = len(self.params)
+        alphas = []
+        ## In CV, all params have the same coeffs structure
+        coeff_ixs = list(self.params[0].coeffs.keys())
+        coeff_ixs.sort(key=_cv2_key_sort)
+        xs_sums = [wparam.xs_sum_zeros(wparam.test) for wparam in self.params]
+        norm_const = [0.0] * cv
+        logLL = [0.0] * cv
+        ## calc baseline for alphas
+        final_keys = []
+        for key in coeff_ixs:
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            if not is_alpha:
+                continue
+            final_keys.append(key)
+            for k, wparam in enumerate(self.params):
+                tup = wparam.coeffs[key]
+                vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                norm_const[k] = new_norm
+                xs_sums[k] += vals
+        for k in range(cv):
+            pdf_for_xs = (xs_sums[k] * xs_sums[k]) / norm_const[k]
+            logLL[k] = np.log(pdf_for_xs).sum()
+        print('logLL for alphas',logLL)
+        beta_keys = []
+        for key in coeff_ixs:
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            if is_alpha:
+                continue
+            beta_keys.append(key)
+        # simple ordering by size (I could have also beta / \sqrt{j+1} as in other places)
+        beta_keys.sort(key=lambda key:sum([math.fabs(wparam.coeffs[key][0]) for wparam in self.params]), reverse=True)
+        tries, used = 3, self.params[0].n
+        history = []
+        while tries > 0 and used > 0:
+            curLogLL = sum(logLL)/cv
+            history.append((len(history), curLogLL))
+            logLLs = {}
+            for key in beta_keys:
+                j, qx, zs, jpow2 = key
+                # compute average LL for key, on temporary accumulators
+                betaLogLL = []
+                for k, wparam in enumerate(self.params):
+                    sum_copy = np.copy(xs_sums[k])
+                    tup = wparam.coeffs[key]
+                    vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                    sum_copy += vals
+                    pdf_for_xs = (sum_copy * sum_copy) / new_norm
+                    betaLogLL.append(np.log(pdf_for_xs).sum())
+                logLLs[key] = sum(betaLogLL)/cv
+            # find best key
+            key = max(logLLs.items(), key=lambda tt:tt[1])[0]
+            if logLLs[key] > curLogLL:
+                print(key, 'better', logLLs[key], curLogLL, 'among', len(beta_keys), '(used', used, ')')
+                beta_keys.remove(key)
+                final_keys.append(key)
+                used -= 1
+                # update all CV-current sums for selected beta_{key}
+                for k, wparam in enumerate(self.params):
+                    tup = wparam.coeffs[key]
+                    vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                    xs_sums[k] += vals
+                    norm_const[k] = new_norm
+                    pdf_for_xs = (xs_sums[k] * xs_sums[k]) / norm_const[k]
+                    logLL[k] = np.log(pdf_for_xs).sum()
+            else:
+                beta_keys.remove(key)
+                tries -= 1
+                if tries > 0:
+                    print('Not better, trying again', tries, 'time(s)')
+        return final_keys, history
+
+def coeff_sort(key_tup):
+    key, tup = key_tup
+    j, qx, zs, jpow2 = key
+    coeff, num = tup
+    is_alpha = j == 0 and all([qi == 0 for qi in qx])
+    v_th = math.fabs(coeff) / math.sqrt(j + 1)
+    return (not is_alpha, -v_th, key)
+
+def coeff_sort_no_j(key_tup):
+    key, tup = key_tup
+    j, qx, zs, jpow2 = key
+    coeff, num = tup
+    is_alpha = j == 0 and all([qi == 0 for qi in qx])
+    v_th = math.fabs(coeff)
+    return (not is_alpha, -v_th, key)
+
+def _cv2_key_sort(key):
+    j, qx, zs, jpow2 = key
+    is_alpha = j == 0 and all([qi == 0 for qi in qx])
+    return (not is_alpha, -j, qx, zs)

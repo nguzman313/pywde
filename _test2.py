@@ -11,7 +11,7 @@ from scipy.interpolate import LinearNDInterpolator
 from statsmodels.nonparametric.kernel_density import KDEMultivariate
 
 
-from pywde.square_root_estimator import WaveletDensityEstimator
+from pywde.square_root_estimator import WaveletDensityEstimator, coeff_sort, coeff_sort_no_j
 
 
 def sign(p1, p2, p3):
@@ -408,30 +408,41 @@ def hellinger_distance(dist, dist_est):
 def fname(what, dist_name, wave_name, delta_j):
     return 'pngs/%s-%s-%d-%s.png' % (dist_name, wave_name, delta_j, what)
 
-def mdl_with(dist_name, wave_name, delta_j):
+def run_with(dist_name, wave_name, delta_j):
     wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=1, delta_j=delta_j) # bior3.7
     dist = dist_from_code(dist_name)
     #plot_dist(fname('true', dist_name, wave_name, delta_j), dist)
-    data = dist.rvs(2000)
-    print('Estimating')
+    data = dist.rvs(200)
     wde.fit(data)
     plot_wde(wde, fname('orig', dist_name, wave_name, delta_j), dist)
-    print('Estimating with MDL')
-    wde.mdlfit(data)
-    plot_wde(wde, fname('mdl', dist_name, wave_name, delta_j), dist)
+    wde.cv2fit(data, 5)
+    plot_wde(wde, fname('cv2', dist_name, wave_name, delta_j), dist)
     ranking = np.array(wde.ranking)
-    print('>> shape: ', ranking.shape)
-    #pos_min = np.argmin(ranking[:,3])
-    #print(pos_min, '\n', ranking[pos_min-30:pos_min+5,:])
-    plt.figure(figsize=(10,4))
-    plt.plot(ranking[:,0], ranking[:,3], 'k:')
-    # plt.plot(ranking[pos_min-30:pos_min+5,0], ranking[pos_min-30:pos_min+5,3], 'r-')
-    # plt.plot(ranking[pos_min-30:pos_min+5,0], ranking[pos_min-30:pos_min+5,1], 'b-')
-    # plt.plot(ranking[pos_min-30:pos_min+5,0], ranking[pos_min-30:pos_min+5,2], 'k:')
+    ##print('>> shape: ', ranking.shape)
+    plt.figure(figsize=(10, 4))
+    plt.plot(ranking[:, 0], ranking[:, 1], 'k:')
     plt.xlabel('# coefficients')
-    plt.ylabel('MDL')
-    plt.savefig(fname('mdl-curve', dist_name, wave_name, delta_j))
+    plt.ylabel('log LL')
+    plt.savefig(fname('cv2-curve', dist_name, wave_name, delta_j))
     plt.close()
+    print('Estimating KDE')
+    kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
+    plot_kde(kde, fname('kde', dist_name, wave_name, delta_j), dist)
+    kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
+    plot_kde(kde, fname('kde_cv', dist_name, wave_name, delta_j), dist)
+    print('Done')
+    return
+    for fun, msg in [(coeff_sort, 'mdl'), (coeff_sort_no_j, 'mdl_nj')]:
+        wde.mdlfit(data, fun)
+        plot_wde(wde, fname(msg, dist_name, wave_name, delta_j), dist)
+        ranking = np.array(wde.ranking)
+        ##print('>> shape: ', ranking.shape)
+        plt.figure(figsize=(10,4))
+        plt.plot(ranking[:,0], ranking[:,3], 'k:')
+        plt.xlabel('# coefficients')
+        plt.ylabel('MDL: ' + msg)
+        plt.savefig(fname(msg + '-curve', dist_name, wave_name, delta_j))
+        plt.close()
     return
     print('Estimating KDE')
     kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
@@ -443,7 +454,7 @@ def mdl_with(dist_name, wave_name, delta_j):
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-mdl_with('pyr1', 'db4', 5) ## bior2.8
+run_with('pyr1', 'db4', 3) ## bior2.8
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
