@@ -405,56 +405,53 @@ def hellinger_distance(dist, dist_est):
     err = (diff * diff).mean()  ## !!! /2
     return err, corr_factor
 
-def fname(what, dist_name, wave_name, delta_j):
-    return 'pngs/%s-%s-%d-%s.png' % (dist_name, wave_name, delta_j, what)
+def fname(what, dist_name, n, wave_name, delta_j):
+    return 'pngs/%s-%04d-%s-%d-%s.png' % (dist_name, n, wave_name, delta_j, what)
 
-def run_with(dist_name, wave_name, delta_j):
+def run_with(dist_name, wave_name, nn, delta_j):
     wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=1, delta_j=delta_j) # bior3.7
     dist = dist_from_code(dist_name)
     #plot_dist(fname('true', dist_name, wave_name, delta_j), dist)
-    data = dist.rvs(200)
+    data = dist.rvs(nn)
     wde.fit(data)
-    plot_wde(wde, fname('orig', dist_name, wave_name, delta_j), dist)
-    wde.cv2fit(data, 5)
-    plot_wde(wde, fname('cv2', dist_name, wave_name, delta_j), dist)
+    plot_wde(wde, fname('orig', dist_name, nn, wave_name, delta_j), dist)
+    wde.mdlfit(data, coeff_sort)
+    plot_wde(wde, fname('mdl', dist_name, nn, wave_name, delta_j), dist)
+    #wde.cv2fit(data, 5)
+    #wde.cv_hd1_fit(data, 5, coeff_sort)
+    #plot_wde(wde, fname('cv2', dist_name, nn, wave_name, delta_j), dist)
     ranking = np.array(wde.ranking)
     ##print('>> shape: ', ranking.shape)
     plt.figure(figsize=(10, 4))
     plt.plot(ranking[:, 0], ranking[:, 1], 'k:')
     plt.xlabel('# coefficients')
-    plt.ylabel('log LL')
-    plt.savefig(fname('cv2-curve', dist_name, wave_name, delta_j))
+    plt.ylabel('mdl')
+    plt.savefig(fname('mdl-curve', dist_name, nn, wave_name, delta_j))
     plt.close()
     print('Estimating KDE')
     kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
-    plot_kde(kde, fname('kde', dist_name, wave_name, delta_j), dist)
+    plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist)
     kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
-    plot_kde(kde, fname('kde_cv', dist_name, wave_name, delta_j), dist)
-    print('Done')
+    plot_kde(kde, fname('kde_cv', dist_name, nn, wave_name, delta_j), dist)
     return
-    for fun, msg in [(coeff_sort, 'mdl'), (coeff_sort_no_j, 'mdl_nj')]:
-        wde.mdlfit(data, fun)
-        plot_wde(wde, fname(msg, dist_name, wave_name, delta_j), dist)
-        ranking = np.array(wde.ranking)
-        ##print('>> shape: ', ranking.shape)
-        plt.figure(figsize=(10,4))
-        plt.plot(ranking[:,0], ranking[:,3], 'k:')
-        plt.xlabel('# coefficients')
-        plt.ylabel('MDL: ' + msg)
-        plt.savefig(fname(msg + '-curve', dist_name, wave_name, delta_j))
-        plt.close()
-    return
-    print('Estimating KDE')
-    kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
-    plot_kde(kde, fname('kde', dist_name, wave_name, delta_j), dist)
-    kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
-    plot_kde(kde, fname('kde_cv', dist_name, wave_name, delta_j), dist)
-    print('Done')
+    # for fun, msg in [(coeff_sort, 'mdl'), (coeff_sort_no_j, 'mdl_nj')]:
+    #     wde.mdlfit(data, fun)
+    #     plot_wde(wde, fname(msg, dist_name, nn, wave_name, delta_j), dist)
+    #     ranking = np.array(wde.ranking)
+    #     ##print('>> shape: ', ranking.shape)
+    #     plt.figure(figsize=(10,4))
+    #     plt.plot(ranking[:,0], ranking[:,3], 'k:')
+    #     plt.xlabel('# coefficients')
+    #     plt.ylabel('MDL: ' + msg)
+    #     plt.savefig(fname(msg + '-curve', dist_name, nn, wave_name, delta_j))
+    #     plt.close()
+    # #return
+    # print('Done')
 
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('pyr1', 'db4', 3) ## bior2.8
+run_with('pyr1', 'db4', 1004, 5) ## bior2.8
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
