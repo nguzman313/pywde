@@ -38,10 +38,12 @@ class WParams(object):
         self.n = 0
         self.pdf = None
         self.test = None
+        self.ball_tree = None
 
     def calc_coeffs(self, xs):
         self.n = xs.shape[0]
-        xs_balls = self._calculate_nearest_balls(xs)
+        self.ball_tree = BallTree(xs)
+        xs_balls = self.calculate_nearest_balls(xs)
         for key in self.coeffs.keys():
             j, qx, zs, jpow2 = key
             jpow2 = np.array(jpow2)
@@ -109,9 +111,8 @@ class WParams(object):
         v_unit = (np.pi ** (self.wave.dim / 2.0)) / gamma(self.wave.dim / 2.0 + 1)
         return math.sqrt(v_unit) * (gamma(self.k) / gamma(self.k + 0.5)) / math.sqrt(self.n)
 
-    def _calculate_nearest_balls(self, xs):
-        ball_tree = BallTree(xs)
-        k_near_radious = ball_tree.query(xs, self.k + 1)[0][:, [-1]]
+    def calculate_nearest_balls(self, xs):
+        k_near_radious = self.ball_tree.query(xs, self.k + 1)[0][:, [-1]]
         factor = self._calc_factor()
         return np.power(k_near_radious, self.wave.dim / 2.0) * factor
 
@@ -197,6 +198,9 @@ class WaveletDensityEstimator(object):
                 continue
             logLL = - np.log(pdf_for_xs).sum()
             penalty = log_riemann_volume_class(k) - log_riemann_volume_param(k, self.params.n)
+            # !!! penalty * 4.0 <-- needs justification; space of params is "doubled" as here is a hemisphere (?)
+            # why 4? why not 2^(4/3) or something? related to "number of levels"?
+            penalty = penalty * 4.0
             if best_mdl is None or logLL + penalty < best_mdl:
                 best_mdl = logLL + penalty
                 best_k = len(keys)
@@ -269,12 +273,13 @@ class WaveletDensityEstimator(object):
                     tup = wparam.coeffs[key]
                     vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
                     sum_copy += vals
+                    # !!! change here, use HD - CV
                     pdf_for_xs = (sum_copy * sum_copy) / new_norm
                     betaLogLL.append(np.log(pdf_for_xs).sum())
                 logLLs[key] = sum(betaLogLL)/cv
             # find best key
             key = max(logLLs.items(), key=lambda tt:tt[1])[0]
-            if logLLs[key] > curLogLL:
+            if logLLs[key] > curLogLL + 0.001: # why 0.001
                 print(key, 'better', logLLs[key], curLogLL, 'among', len(beta_keys), '(used', used, ')')
                 beta_keys.remove(key)
                 final_keys.append(key)
@@ -293,6 +298,102 @@ class WaveletDensityEstimator(object):
                 if tries > 0:
                     print('Not better, trying again', tries, 'time(s)')
         return final_keys, history
+
+    def cv_hd1_fit(self, xs, cv, sorting_fun):
+        print('CV_HD1 estimator')
+        t0 = datetime.now()
+        self._fitinit(xs, cv=cv)
+        final_keys, ranking = self.calc_pdf_cv_hd1(sorting_fun)
+        self._fitinit(xs)
+        coeffs = {key:self.params.coeffs[key] for key in final_keys}
+        self.pdf = self.params.calc_pdf(coeffs)
+        self.ranking = ranking
+        self.name = '%s, n=%d, j0=%s, Dj=%d CV(%d).HD1' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j, cv)
+        print('secs=', (datetime.now() - t0).total_seconds())
+
+    def calc_pdf_cv_hd1(self, sorting_fun):
+        n = self.params[0].n
+        cv = len(self.params)
+        alphas = []
+        ## In CV, all params have the same coeffs structure; we sort based on first CV (for now)
+        coeff_ixs = list(self.params[0].coeffs.items())
+        coeff_ixs.sort(key=sorting_fun)
+        xs_sums = [wparam.xs_sum_zeros(wparam.test) for wparam in self.params]
+        norm_const = [0.0] * cv
+        # HD^2 = 1 - \int \hat{g} \sqrt{f} ~= 1 - \sum_{x_t \in T} \hat{g}_F \sqrt{f(x_t)}
+        hd_term2 = [0.0] * cv
+        ## calc baseline for alphas
+        final_keys = []
+        for key_tup in coeff_ixs:
+            key, tup = key_tup
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            if not is_alpha:
+                continue
+            final_keys.append(key)
+            for k, wparam in enumerate(self.params):
+                tup = wparam.coeffs[key]
+                vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                norm_const[k] = new_norm
+                xs_sums[k] += vals
+        vol_balls = {}
+        for k, wparam in enumerate(self.params):
+            vol_balls[k] = wparam.calculate_nearest_balls(wparam.test)
+        for k, wparam in enumerate(self.params):
+            g_for_xs = np.abs(xs_sums[k]) / math.sqrt(norm_const[k])
+            hd_term2[k] = np.asscalar(np.dot(g_for_xs, vol_balls[k]))
+        print('hd_term2 for alphas', hd_term2)
+        beta_keys = []
+        for key_tup in coeff_ixs:
+            key, tup = key_tup
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            if is_alpha:
+                continue
+            beta_keys.append(key)
+        # simple ordering by size (I could have also beta / \sqrt{j+1} as in other places)
+        # beta_keys.sort(key=lambda key:sum([math.fabs(wparam.coeffs[key][0]) for wparam in self.params]), reverse=True)
+        tries, used = 3, self.params[0].n
+        history = []
+        while tries > 0 and used > 0:
+            curHDterm2 = sum(hd_term2)/cv
+            history.append((len(history), curHDterm2))
+            hdTerm2s = {}
+            for key in beta_keys:
+                j, qx, zs, jpow2 = key
+                # compute average HD term2 for key, on temporary accumulators
+                betaHDterm2 = []
+                for k, wparam in enumerate(self.params):
+                    sum_copy = np.copy(xs_sums[k])
+                    tup = wparam.coeffs[key]
+                    vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                    sum_copy += vals
+                    # !!! change here, use HD - CV
+                    g_for_xs = np.abs(sum_copy) / math.sqrt(new_norm)
+                    betaHDterm2.append(np.asscalar(np.dot(g_for_xs, vol_balls[k])))
+                hdTerm2s[key] = sum(betaHDterm2)/cv
+            # find best key; max here is min HD as term2 in HD is negative
+            key = max(hdTerm2s.items(), key=lambda tt:tt[1])[0]
+            if hdTerm2s[key] > curHDterm2 * (1.0 + 0.1/n): # why 0.001
+                print(key, 'better', hdTerm2s[key], curHDterm2, 'among', len(beta_keys), '(used', used, ')')
+                beta_keys.remove(key)
+                final_keys.append(key)
+                used -= 1
+                # update all CV-current sums for selected beta_{key}
+                for k, wparam in enumerate(self.params):
+                    tup = wparam.coeffs[key]
+                    vals, new_norm = wparam.calc1(key, tup, wparam.test, norm_const[k])
+                    xs_sums[k] += vals
+                    norm_const[k] = new_norm
+                    g_for_xs = np.abs(xs_sums[k]) / math.sqrt(new_norm)
+                    hd_term2[k] = np.asscalar(np.dot(g_for_xs, vol_balls[k]))
+            else:
+                beta_keys.remove(key)
+                tries -= 1
+                if tries > 0:
+                    print('Not better, trying again', tries, 'time(s)')
+        return final_keys, history
+
 
 def coeff_sort(key_tup):
     key, tup = key_tup
