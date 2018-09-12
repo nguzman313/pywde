@@ -112,7 +112,8 @@ class WParams(object):
         return math.sqrt(v_unit) * (gamma(self.k) / gamma(self.k + 0.5)) / math.sqrt(self.n)
 
     def calculate_nearest_balls(self, xs):
-        k_near_radious = self.ball_tree.query(xs, self.k + 1)[0][:, [-1]]
+        dist, inx = self.ball_tree.query(xs, self.k + 1)
+        k_near_radious = dist[:, [-1]]
         factor = self._calc_factor()
         return np.power(k_near_radious, self.wave.dim / 2.0) * factor
 
