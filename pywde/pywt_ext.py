@@ -181,6 +181,7 @@ class WaveletTensorProduct(object):
     def __init__(self, wave_names):
         self.dim = len(wave_names)
         self.waves = [Wavelet(name) for name in wave_names]
+        self.orthogonal = all([wave.orthogonal for wave in self.waves])
         self.qq = list(itt.product(range(2), repeat=self.dim))
         self.name = 'x'.join(wave_names)
 

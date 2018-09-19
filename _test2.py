@@ -335,16 +335,19 @@ def plot_dist(fname, dist):
     print('sum=', zz.mean())
     zz_sum = zz.sum() / grid_n / grid_n  # not always near 1
     print('int =', zz_sum)
+    max_v = (zz / zz_sum).max()
     fig = plt.figure()
     ax = fig.gca(projection='3d')
     ax.plot_surface(xx, yy, zz / zz_sum, edgecolors='k', linewidth=0.5, cmap=cm.get_cmap('BuGn'))
     ax.set_title(dist.code)
+    ax.set_zlim(0, 1.1 * max_v)
     #plt.show()
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
+    return max_v
 
-def plot_wde(wde, fname, dist):
+def plot_wde(wde, fname, dist, zlim):
     print('Plotting %s' % fname)
     hd, corr_factor = hellinger_distance(dist, wde)
     print(wde.name, 'HD=', hd)
@@ -359,13 +362,15 @@ def plot_wde(wde, fname, dist):
     ax = fig.gca(projection='3d')
     ax.plot_surface(xx, yy, zz, edgecolors='k', linewidth=0.5, cmap=cm.get_cmap('BuGn'))
     ax.set_title(wde.name + ('\nHD = %g' % hd))
+    ax.set_zlim(0, zlim)
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
 
-def plot_kde(kde, fname, dist):
+def plot_kde(kde, fname, dist, zlim):
     print('Plotting %s' % fname)
     hd, corr_factor = hellinger_distance(dist, kde)
+    print('kde HD=', hd)
     grid_n = 40 ## 70
     xx, yy = grid_as_vector(grid_n)
     grid2 = np.array((xx.flatten(), yy.flatten())).T
@@ -378,6 +383,7 @@ def plot_kde(kde, fname, dist):
     ax = fig.gca(projection='3d')
     ax.plot_surface(xx, yy, zz, edgecolors='k', linewidth=0.5, cmap=cm.get_cmap('BuGn'))
     ax.set_title(('KDE bw=%s' % str(kde.bw)) + ('\nHD = %g' % hd))
+    ax.set_zlim(0, zlim)
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
@@ -411,47 +417,24 @@ def fname(what, dist_name, n, wave_name, delta_j):
 def run_with(dist_name, wave_name, nn, delta_j):
     wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=1, delta_j=delta_j) # bior3.7
     dist = dist_from_code(dist_name)
-    #plot_dist(fname('true', dist_name, wave_name, delta_j), dist)
+    max_v = plot_dist(fname('true', dist_name, nn, wave_name, delta_j), dist)
     data = dist.rvs(nn)
     wde.fit(data)
-    plot_wde(wde, fname('orig', dist_name, nn, wave_name, delta_j), dist)
-    wde.mdlfit(data, coeff_sort)
-    plot_wde(wde, fname('mdl', dist_name, nn, wave_name, delta_j), dist)
-    #wde.cv2fit(data, 5)
-    #wde.cv_hd1_fit(data, 5, coeff_sort)
-    #plot_wde(wde, fname('cv2', dist_name, nn, wave_name, delta_j), dist)
-    ranking = np.array(wde.ranking)
-    ##print('>> shape: ', ranking.shape)
-    plt.figure(figsize=(10, 4))
-    plt.plot(ranking[:, 0], ranking[:, 1], 'k:')
-    plt.xlabel('# coefficients')
-    plt.ylabel('mdl')
-    plt.savefig(fname('mdl-curve', dist_name, nn, wave_name, delta_j))
-    plt.close()
+    plot_wde(wde, fname('orig', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    wde.mdlfit(data)
+    plot_wde(wde, fname('hd', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    wde.cvfit(data)
+    plot_wde(wde, fname('cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
     print('Estimating KDE')
     kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
-    plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist)
+    plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
     kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
-    plot_kde(kde, fname('kde_cv', dist_name, nn, wave_name, delta_j), dist)
-    return
-    # for fun, msg in [(coeff_sort, 'mdl'), (coeff_sort_no_j, 'mdl_nj')]:
-    #     wde.mdlfit(data, fun)
-    #     plot_wde(wde, fname(msg, dist_name, nn, wave_name, delta_j), dist)
-    #     ranking = np.array(wde.ranking)
-    #     ##print('>> shape: ', ranking.shape)
-    #     plt.figure(figsize=(10,4))
-    #     plt.plot(ranking[:,0], ranking[:,3], 'k:')
-    #     plt.xlabel('# coefficients')
-    #     plt.ylabel('MDL: ' + msg)
-    #     plt.savefig(fname(msg + '-curve', dist_name, nn, wave_name, delta_j))
-    #     plt.close()
-    # #return
-    # print('Done')
+    plot_kde(kde, fname('kde_cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
 
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('pyr1', 'db4', 200, 5) ## bior2.8
+run_with('pyr1', 'sym4', 1001, 4) ## bior2.6
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
