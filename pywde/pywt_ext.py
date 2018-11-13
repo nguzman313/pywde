@@ -17,7 +17,7 @@ def trim_zeros(coeffs):
     return coeffs[np.min(nz):np.max(nz) + 1]
 
 def calc_fun(support, values):
-    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=1)
+    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=2)
     resp.support = support
     return resp
 
@@ -92,6 +92,7 @@ class Wavelet(pywt.Wavelet):
         self.wave = pywt.Wavelet(wave_name)
         self.support = wave_support_info(self.wave)
         self.funs = calc_wavefuns(self.wave, self.support)
+        self.dim = 1
 
     @property
     def phi_prim(self, ix=(1, 0)):
@@ -121,14 +122,18 @@ class Wavelet(pywt.Wavelet):
         :return: function object (callable), which can operate over numpy arrays; the
             function object will have an attribute .support with the support at given
             scale 's' and translation 'z'
+
+        Note: s (scale) can't go beyond 64 (j=6), as numerical accuracy is lost
         """
         if ix is None:
             ix = (0, 1, 0)
         q, s, z = ix
         fun = self.funs[what][q]
         a, b = fun.support
-        f = lambda x: fun(s * x + z)
+        s2 = math.sqrt(s)
+        f = lambda x: s2 * fun(s * x + z)
         f.support = ((a - z)/s, (b - z)/s)
+        f._ix = ix
         return f
 
     def supp_ix(self, what, ix=None):
@@ -144,6 +149,7 @@ class Wavelet(pywt.Wavelet):
         fun = self.funs[what][q]
         a, b = fun.support
         f = lambda x: (lambda v: np.less(a, v) & np.less(v, b))(s * x + z)
+        f._ix = ix
         return f
 
     def zrange(self, what, xrange, ix=None):
@@ -198,11 +204,12 @@ class WaveletTensorProduct(object):
         return self.fun_ix('dual', ix)
 
     def fun_ix(self, what, ix):
+        "See Wavelet.fun_ix"
         qq, ss, zz = ix
-        ss2 = math.sqrt(np.prod(ss))
-        support = [self.waves[i].support[what][qq[i]] for i in range(self.dim)]
+        supp_min = np.array([self.waves[i].support[what][qq[i]][0] for i in range(self.dim)])
+        supp_max = np.array([self.waves[i].support[what][qq[i]][1] for i in range(self.dim)])
         def f(xx):
-            proj = self.proj_fun(xx)
+            proj = self.proj_fun(self.dim, xx)
             resp = None
             for i in range(self.dim):
                 col_i = self.waves[i].fun_ix(what, (qq[i], ss[i], zz[i]))(proj(i))
@@ -210,15 +217,16 @@ class WaveletTensorProduct(object):
                     resp = col_i
                 else:
                     resp = np.multiply(resp, col_i)
-            return resp * ss2
+            return resp
         f.dim = self.dim
-        f.support = support
+        f.support = np.array([supp_min - zz, supp_max - zz]) / ss
+        f._ix = ix
         return f
 
     def supp_ix(self, what, ix):
         qq, ss, zz = ix
         def f(xx):
-            proj = self.proj_fun(xx)
+            proj = self.proj_fun(self.dim, xx)
             resp = None
             for i in range(self.dim):
                 col_i = self.waves[i].supp_ix(what, (qq[i], ss[i], zz[i]))(proj(i))
@@ -227,16 +235,18 @@ class WaveletTensorProduct(object):
                 else:
                     resp = resp & col_i
             return resp.astype(int)
+        f._ix = ix
         return f
 
     @staticmethod
-    def proj_fun(xx):
+    def proj_fun(dim, xx):
         if type(xx) == tuple or type(xx) == list:
+            assert len(xx) == dim
             return lambda i: xx[i]
         else:
             return lambda i: xx[:, i]
 
     def zs_range(self, what, minx, maxx, qs, js):
         zs_min = np.floor(np.array([self.waves[i].support[what][qs[i]][0] - (2 ** js[i]) * maxx[i] for i in range(self.dim)])) - 1
-        zs_max = np.floor(np.array([self.waves[i].support[what][qs[i]][1] - (2 ** js[i]) * minx[i] for i in range(self.dim)])) + 1
+        zs_max = np.ceil(np.array([self.waves[i].support[what][qs[i]][1] - (2 ** js[i]) * minx[i] for i in range(self.dim)])) + 1
         return zs_min, zs_max
