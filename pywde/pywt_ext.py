@@ -17,7 +17,7 @@ def trim_zeros(coeffs):
     return coeffs[np.min(nz):np.max(nz) + 1]
 
 def calc_fun(support, values):
-    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=2)
+    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=1)
     resp.support = support
     return resp
 
@@ -128,6 +128,7 @@ class Wavelet(pywt.Wavelet):
         if ix is None:
             ix = (0, 1, 0)
         q, s, z = ix
+        assert s <= 64
         fun = self.funs[what][q]
         a, b = fun.support
         s2 = math.sqrt(s)
@@ -190,6 +191,10 @@ class WaveletTensorProduct(object):
         self.orthogonal = all([wave.orthogonal for wave in self.waves])
         self.qq = list(itt.product(range(2), repeat=self.dim))
         self.name = 'x'.join(wave_names)
+
+    def __repr__(self):
+        spec = ','.join([wave.name for wave in self.waves])
+        return '<WaveletTensorProduct (%s)>' % spec
 
     def prim(self, ix=None):
         if ix is None:
