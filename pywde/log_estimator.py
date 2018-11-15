@@ -80,7 +80,7 @@ class WaveletDensityEstimator(object):
         jj = self._jj(j)
         jpow2 = 2 ** jj
         for qx in qxs:
-            zs_min, zs_max = self.wave.zs_range('dual', self.minx, self.maxx, qx, jj)
+            zs_min, zs_max = self.wave.z_range('dual', (qx, jj, None), self.minx, self.maxx)
             self.coeffs[j][qx] = {}
             self.nums[j][qx] = {}
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):

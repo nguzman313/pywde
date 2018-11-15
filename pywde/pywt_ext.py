@@ -131,6 +131,9 @@ class Wavelet(pywt.Wavelet):
         assert s <= 64
         fun = self.funs[what][q]
         a, b = fun.support
+        # a <= s x + z <= b
+        # a - z <= s x <= b - z
+        # (a - z)/s <= x <= (b - z)/s
         s2 = math.sqrt(s)
         f = lambda x: s2 * fun(s * x + z)
         f.support = ((a - z)/s, (b - z)/s)
@@ -153,28 +156,25 @@ class Wavelet(pywt.Wavelet):
         f._ix = ix
         return f
 
-    def zrange(self, what, xrange, ix=None):
+    def z_range(self, what, ix, minx, maxx):
         """
         Returns the range of z values that cover an interval (minx, maxx) for given index ix in system what
         :param what: Either 'base' or 'dual'
-        :param xrange: tuple with (min, max) values for x
+        :param minx: min for x
+        :param maxx: max for x
         :param ix: See `fun_ix`
         :return: tuple
         """
-        if ix is None:
-            ix = (0, 1, 0)
         q, s, z = ix
         fun = self.funs[what][q]
         a, b = fun.support
-        minx, maxx = xrange[0], xrange[1]
         # minx <= x <= maxx
-        # a <= s * x + z <= b
-        # a - s * x <= z <= b - s * x
-        # a - s * maxx <= z <= b - s * maxx
-        # a - s * minx <= z <= b - s * minx
+        # a <= s x + z <= b
+        # a - s x <= z <= b - s x
+        # a - s maxx <= z <= b - s minx
         # Hence, a - s * maxx <= z <= b - s * minx
-        zmin = math.floor(a - s * maxx)
-        zmax = math.ceil(b - s * minx)
+        zmin = math.ceil(a - s * maxx)
+        zmax = math.floor(b - s * minx)
         return (zmin, zmax)
 
 
@@ -251,7 +251,13 @@ class WaveletTensorProduct(object):
         else:
             return lambda i: xx[:, i]
 
-    def zs_range(self, what, minx, maxx, qs, js):
-        zs_min = np.floor(np.array([self.waves[i].support[what][qs[i]][0] - (2 ** js[i]) * maxx[i] for i in range(self.dim)])) - 1
-        zs_max = np.ceil(np.array([self.waves[i].support[what][qs[i]][1] - (2 ** js[i]) * minx[i] for i in range(self.dim)])) + 1
+    def z_range(self, what, ix, minx, maxx):
+        qs, js, zs = ix
+        zs_min, zs_max = [], []
+        for i in range(self.dim):
+            zi_min, zi_max = self.waves[i].z_range(what, (qs[i], js[i], None), minx[i], maxx[i])
+            zs_min.append(zi_min)
+            zs_max.append(zi_max)
+        zs_min = np.array(zs_min)
+        zs_max = np.array(zs_max)
         return zs_min, zs_max
