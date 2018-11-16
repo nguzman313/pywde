@@ -3,26 +3,11 @@ import numpy as np
 import itertools as itt
 from .common import all_zs_tensor
 from sklearn.neighbors import BallTree
-from scipy.special import gamma, loggamma
+from scipy.special import gamma
 from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
 
-
-def log_factorial(n):
-    if n <= 1:
-        return 0
-    return np.log(np.array(range(2, n + 1))).sum()
-
-
-def log_riemann_volume_class(k):
-    "Total Riemannian volume in model class with k parameters"
-    return math.log(2) + k/2 * math.log(math.pi) - loggamma(k/2)
-
-
-def log_riemann_volume_param(k, n):
-    "Riemannian volume around estimate with k parameters for n samples"
-    return (k/2) * math.log(2 * math.pi / n)
 
 
 class WParams(object):
@@ -46,14 +31,18 @@ class WParams(object):
         self.n = xs.shape[0]
         self.ball_tree = BallTree(xs)
         self.calculate_nearest_balls(xs, cv)
+        norm = 0.0
+        omega = self.omega(self.n)
         for key in self.coeffs.keys():
             j, qx, zs, jpow2 = key
             jpow2 = np.array(jpow2)
             num = self.wave.supp_ix('dual', (qx, jpow2, zs))(xs).sum()
-            coeff = (self.wave.fun_ix('dual', (qx, jpow2, zs))(xs) * self.xs_balls).sum() * self.omega(self.n)
+            terms = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
+            coeff = (terms * self.xs_balls).sum() * omega
             #print('beta_{%s}' % str(key), '=', coeff)
             self.coeffs[key] = (coeff, num)
-        print('calc_coeffs #', len(self.coeffs))
+            norm += coeff * coeff
+        print('calc_coeffs #', len(self.coeffs), norm)
 
     def calc_pdf(self, coeffs):
         def fun(coords):
@@ -127,7 +116,8 @@ class WParams(object):
         omega_n1 = self.omega(self.n - 1)
         omega_n = self.omega(self.n)
         term1, term2, term3 = self.calc_terms(key, coeff, xs)
-        return omega_n1 * (term1 - term2 + term3) / omega_n
+        # return omega_n1 * (term1 - term2 + term3) / omega_n
+        return omega_n1 * term1 / omega_n, omega_n1 * (term2 - term3) / omega_n
 
     def calc_b2_correction(self, key, coeff, xs):
         term1, term2, term3 = self.calc_terms(key, coeff, xs)
@@ -157,13 +147,13 @@ class WParams(object):
         jj = self._jj(j)
         jpow2 = tuple(2 ** jj)
         for qx in qxs:
-            zs_min, zs_max = self.wave.zs_range('dual', self.minx, self.maxx, qx, jj)
+            zs_min, zs_max = self.wave.z_range('dual', (qx, jpow2, None), self.minx, self.maxx)
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
                 self.coeffs[(j, qx, zs, jpow2)] = None
 
     def sqrt_vunit(self):
         "Volume of unit hypersphere in d dimensions"
-        return (np.pi ** (self.wave.dim / 2.0)) / gamma(self.wave.dim / 2.0 + 1)
+        return (np.pi ** (self.wave.dim / 4.0)) / gamma(self.wave.dim / 2.0 + 1)
 
     def omega(self, n):
         "Bias correction for k-th nearest neighbours sum for sample size n"
@@ -235,13 +225,46 @@ class WaveletDensityEstimator(object):
 
     def calc_pdf_cv(self, xs):
         coeffs = {}
+        contributions = []
+        alpha_contribution = 0.0
+        alpha_norm = 0.0
+        i = 0
         for key_tup in self.params.coeffs.items():
             key, tup = key_tup
             coeff, num = tup
             if coeff == 0.0:
                 continue
-            coeff_contribution = self.params.calc_contribution(key, coeff, xs)
-            if coeff_contribution > 0:
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            coeff2, coeff_contribution = self.params.calc_contribution(key, coeff, xs)
+            if is_alpha:
+                i += 1
+                coeffs[key] = tup
+                alpha_norm += coeff2
+                alpha_contribution += coeff_contribution
+                continue
+            threshold = math.fabs(coeff) / math.sqrt(j + 1)
+            contributions.append(((key, tup), threshold, (coeff2, coeff_contribution)))
+        contributions.sort(key=lambda triple: -triple[1])
+        print(alpha_norm, alpha_contribution)
+        total_contribution = alpha_contribution
+        total_norm = alpha_norm
+        min_v = 0.01/self.params.n
+        print('min_v',min_v)
+        with open('data2.csv', 'w') as fh:
+            for tripple in contributions:
+                coeff2, coeff_contribution = tripple[2]
+                total_contribution += coeff_contribution
+                key, tup = tripple[0]
+                j, qx, zs, jpow2 = key
+                coeff, num = tup
+                total_norm += coeff2
+                tt = coeff_contribution < min_v
+                #print(key, '->', total_norm, '-', total_contribution, '=', total_norm - total_contribution, ('*' if tt else ''), coeff_contribution)
+                i += 1
+                fh.write('%d,%d,%f\n' % (i, j, total_norm - total_contribution))
+                if tt:
+                    continue
                 coeffs[key] = tup
         return coeffs
 
