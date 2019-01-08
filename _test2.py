@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 import scipy.stats as stats
+import scipy.integrate as integrate
 from functools import reduce
 #from scipy.spatial import Delaunay
 from scipy.interpolate import LinearNDInterpolator
@@ -28,6 +29,24 @@ def in_triangle(pt, points):
 def triangle_area(points):
     a, b, c = points
     return math.fabs(a[0]*b[1] + b[0]*c[1] + c[0]*a[1] - a[0]*c[1] - b[0]*a[1] - c[0]*b[1])/2.0
+
+
+def _pdf(probs, dists, grid):
+    assert len(probs) == len(dists)
+    if type(grid) == tuple or type(grid) == list:
+        pos = np.stack(grid, axis=0)
+        pos = np.moveaxis(pos, 0, -1)
+    else:
+        pos = grid
+    pdf_vals = None
+    for prob, dist in zip(probs, dists):
+        vals = dist.pdf(pos)
+        if pdf_vals is None:
+            pdf_vals = vals * prob
+        else:
+            pdf_vals = np.add(pdf_vals, vals * prob)
+    return pdf_vals
+
 
 class PyramidDist(object):
     def __init__(self, points, centre, code='pyr1'):
@@ -110,6 +129,24 @@ class Beta2D(object):
         return self.dist.pdf(grid[0]) * self.dist.pdf(grid[1])
 
 
+class UniformDistribution(object):
+    def __init__(self):
+        self.code = 'unif'
+        self.dim = 2
+
+    def rvs(self, num):
+        return 0.25 + np.random.uniform(size=(num, self.dim))/2
+
+    def pdf(self, grid):
+        if type(grid) == tuple or type(grid) == list:
+            x, y = grid
+        else:
+            x = grid[:,0]
+            y = grid[:, 1]
+        vals = np.less(0.25, x) & np.less(x, 0.75) & np.less(0.25, y) & np.less(y, 0.75)
+        return 4 * vals
+
+
 class TruncatedMultiNormalD(object):
     """Truncated mixture or multivariate normal distributions. Dimension is inferred from first $\mu$"""
 
@@ -118,7 +155,7 @@ class TruncatedMultiNormalD(object):
         self.probs = probs
         self.dists = [stats.multivariate_normal(mean=mu, cov=cov) for mu, cov in zip(mus, covs)]
         self.dim = len(mus[0])
-        z = self._pdf(mise_mesh(self.dim))
+        z = _pdf(self.probs, self.dists, mise_mesh(self.dim))
         nns = reduce(lambda x, y: (x-1) * (y-1), z.shape)
         self.sum = z.sum()/nns
 
@@ -153,21 +190,100 @@ class TruncatedMultiNormalD(object):
                         break
         return np.array(data)
 
-    def _pdf(self, grid):
-        if type(grid) == tuple or type(grid) == list:
-            pos = np.stack(grid, axis=0)
-            pos = np.moveaxis(pos, 0, -1)
-        else:
-            pos = grid
-        vals = [dist.pdf(pos) for dist in self.dists]
-        pdf_vals = vals[0] * self.probs[0]
-        for i in range(len(self.probs) - 1):
-            pdf_vals = np.add(pdf_vals, vals[i+1] * self.probs[i+1])
-        #pdf_vals = pdf_vals / total
-        return pdf_vals
+
+class TruncatedLaplace2D(object):
+    def __init__(self, mu, scale, code='lap1', angle=30.):
+        self.mu = mu
+        self.scale = scale
+        self.dim = 2
+        self.code = code
+        theta = (angle / 180.) * np.pi
+        self.rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]])
+        self.sum = self._pdfsum()
+
+    def rvs(self, num):
+        resp = None
+        while num > 0:
+            vs = np.random.laplace(0.0, scale=self.scale, size=(num + 10, 2))
+            vs = np.matmul(vs, self.rot) + self.mu
+            cond = (0 <= vs[:, 0]) & (vs[:, 0] <= 1.0) & (0 <= vs[:, 1]) & (vs[:, 1] <= 1)
+            vs = vs[cond][:num]
+            if len(vs) == 0:
+                continue
+            num -= vs.shape[0]
+            if resp is not None:
+                resp = np.concatenate((resp, vs))
+            else:
+                resp = vs
+        return resp
 
     def pdf(self, grid):
-        return self._pdf(grid)/self.sum
+        if type(grid) == tuple or type(grid) == list:
+            pos = np.stack(grid, axis=0)
+            vals = np.moveaxis(pos, 0, -1)
+            print('new shape', vals.shape)
+        else:
+            vals = grid
+        # print('vals', vals)
+        # print('vals - mu', vals - self.mu)
+        # print('(vals - mu) rot^T', np.matmul(vals - self.mu, self.rot.T))
+        vals = np.matmul(vals - self.mu, self.rot.T)
+        vals = np.exp(-abs(vals)/self.scale) / (2 * self.scale)
+        #print('pdf 2', vals)
+        if len(vals.shape) == 2:
+            vals = vals[:,0] * vals[:,1]
+        else:
+            vals = vals[:,:,0] * vals[:,:,1]
+        return vals / self.sum
+
+    def _pdfsum(self):
+        grid = mise_mesh(self.dim)
+        pos = np.stack(grid, axis=0)
+        vals = np.moveaxis(pos, 0, -1)
+        vals = np.matmul(vals - self.mu, self.rot.T)
+        resp = np.exp(-abs(vals)/self.scale) / (2 * self.scale)
+        xx, yy = resp[:,:,0], resp[:,:,1]
+        nns = reduce(lambda x, y: x * y, resp.shape)/resp.shape[-1]
+        resp = (xx * yy).sum()/nns
+        return resp
+
+
+class MixtureDistribution(object):
+    def __init__(self, probs, dists, code=None):
+        self.probs = probs
+        self.dists = dists
+        self.dim = dists[0].dim
+        assert all([self.dim == dist.dim for dist in dists])
+        if code:
+            self.code = code
+        else:
+            self.code = 'x'.join([dist.code for dist in dists])
+        z = _pdf(self.probs, self.dists, mise_mesh(self.dim))
+        nns = reduce(lambda x, y: (x-1) * (y-1), z.shape)
+        self.sum = z.sum()/nns
+
+    def pdf(self, grid):
+        return _pdf(self.probs, self.dists, grid)/self.sum
+
+    def _rvs(self):
+        while True:
+            for xvs in zip(*[dist.rvs(100) for dist in self.dists]):
+                yield xvs
+
+    def rvs(self, num):
+        data = []
+        while num > 0:
+            for dd in self._rvs():
+                i = np.random.choice(np.arange(0,len(self.probs)), p=self.probs)
+                d = dd[i]
+                if 0 <= d[0] and d[0] <= 1 and 0 <= d[1] and d[1] <= 1:
+                    data.append(d)
+                    num -= 1
+                    if num == 0:
+                        break
+        return np.array(data)
+
 
 def mise_mesh(d=2):
     grid_n = 256 if d == 2 else 40
@@ -315,10 +431,36 @@ def dist_from_code(code):
             [m1, m2 / 1.5, m1 / 2, m2 / 3],
             code=code
         )
+    elif code == 'mix9':
+        sigma = 0.03
+        angle = 10.
+        theta = (angle / 180.) * np.pi
+        rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]])
+        m1 = np.array([[sigma / 6, 0], [0, sigma / 8]])
+        m2 = np.dot(rot, np.dot(m1, rot.T))
+        prop = np.array([5, 50, 1, 1])
+        prop = prop / prop.sum()
+        return TruncatedMultiNormalD(
+            prop.tolist(),
+            [np.array([0.2, 0.3]), np.array([0.5, 0.5]), np.array([0.65, 0.7]), np.array([0.82, 0.85])],
+            [m1, np.array([[0.05,0],[0,0.05]]), m2 / 4.5, m1 / 5],
+            code=code
+        )
+    elif code == 'lap1':
+        return TruncatedLaplace2D(np.array([0.5, 0.5]), 0.1, code)
+    elif code == 'lap2':
+        return TruncatedLaplace2D(np.array([0.5, 0.5]), 0.1, code, angle=45.)
+    elif code == 'lap3':
+        return TruncatedLaplace2D(np.array([0.4, 0.4]), 0.1, code, angle=45.)
     elif code == 'tri1':
         return TriangleDist(((0.1,0.2),(0.3,0.7),(0.8,0.2)))
     elif code == 'pyr1':
         return PyramidDist(((0.1,0.2),(0.4,0.9),(0.8,0.2)), (0.4,0.3))
+    elif code == 'pyr2':
+        return PyramidDist(((0.1, 0.2), (0.4, 0.9), (0.8, 0.2)), (0.4, 0.3))
+    elif code == 'unif':
+        return UniformDistribution()
     else:
         raise NotImplemented('Unknown distribution code [%s]' % code)
 
@@ -367,6 +509,21 @@ def plot_wde(wde, fname, dist, zlim):
     plt.close()
     print('%s saved' % fname)
 
+
+def plot_energy(wde, fname):
+    fig = plt.figure()
+    xx = wde.vals[:,0]
+    yy = wde.vals[:,1]
+    plt.plot(xx, yy)
+    plt.axvline(x=wde.threshold, ymin=min(yy), ymax=max(yy), c='r')
+    plt.ylim(min(yy)*0.95, max(yy)*1.05)
+    plt.xlabel('C')
+    plt.ylabel('$B_C$')
+    plt.savefig(fname)
+    plt.close()
+    print('%s saved' % fname)
+
+
 def plot_kde(kde, fname, dist, zlim):
     print('Plotting %s' % fname)
     hd, corr_factor = hellinger_distance(dist, kde)
@@ -387,6 +544,20 @@ def plot_kde(kde, fname, dist, zlim):
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
+
+
+def hellinger_distance_wip(dist, dist_est):
+    def ferr(x, y):
+        args = np.array([(x, y)])
+        pdf_vals = np.sqrt(dist.pdf(args))
+        est_vals = np.sqrt(dist_est.pdf(args))/corr_factor
+        return ((pdf_vals - est_vals) ** 2)[0]
+    def pdf(x, y):
+        est_vals = dist_est.pdf(np.array([(x, y)]))
+        return est_vals[0]
+    corr_factor = integrate.dblquad(pdf, 0.0, 1.0, lambda x:0.0, lambda x:1.0)
+    err = integrate.dblquad(ferr, 0.0, 1.0, lambda x: 0.0, lambda x: 1.0)
+    return err, corr_factor
 
 
 def hellinger_distance(dist, dist_est):
@@ -421,20 +592,33 @@ def run_with(dist_name, wave_name, nn, delta_j):
     data = dist.rvs(nn)
     wde.fit(data)
     plot_wde(wde, fname('orig', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    wde.mdlfit(data)
-    plot_wde(wde, fname('hd', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    # wde.mdlfit(data)
+    # plot_wde(wde, fname('hd', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
     wde.cvfit(data)
     plot_wde(wde, fname('cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    print('Estimating KDE')
-    kde = KDEMultivariate(data, 'c' * data.shape[1]) ## cv_ml
-    plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    plot_energy(wde, fname('energy', dist_name, nn, wave_name, delta_j))
+    num = len(wde.params.coeffs)
+    # print('Estimating KDE')
+    # kde = KDEMultivariate(data, 'c' * data.shape[1])
+    # plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    print('Estimating KDE all data')
     kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
     plot_kde(kde, fname('kde_cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+
+
+#
+# TODO - check consitency bby increasing sample size !!!
+#
+# - chicken, cai - look
+# - why 3 - double check formula and algorithm
+# - then send again to Spiro & Gery
+# - find better distributions to showcase
+#
 
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('pyr1', 'sym4', 1001, 4) ## bior2.6
+run_with('pyr1', 'sym4', 2000, 3) ## bior2.6 ## sym4 ## db4
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()

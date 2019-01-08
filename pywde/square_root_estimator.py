@@ -8,7 +8,60 @@ from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
 
+# from scipy cookbook
+def smooth(x, window_len=11, window='hanning'):
+    """smooth the data using a window with requested size.
 
+    This method is based on the convolution of a scaled window with the signal.
+    The signal is prepared by introducing reflected copies of the signal
+    (with the window size) in both ends so that transient parts are minimized
+    in the begining and end part of the output signal.
+
+    input:
+        x: the input signal
+        window_len: the dimension of the smoothing window; should be an odd integer
+        window: the type of window from 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'
+            flat window will produce a moving average smoothing.
+
+    output:
+        the smoothed signal
+
+    example:
+
+    t=linspace(-2,2,0.1)
+    x=sin(t)+randn(len(t))*0.1
+    y=smooth(x)
+
+    see also:
+
+    numpy.hanning, numpy.hamming, numpy.bartlett, numpy.blackman, numpy.convolve
+    scipy.signal.lfilter
+
+    TODO: the window parameter could be the window itself if an array instead of a string
+    NOTE: length(output) != length(input), to correct this: return y[(window_len/2-1):-(window_len/2)] instead of just y.
+    """
+
+    if x.ndim != 1:
+        raise ValueError("smooth only accepts 1 dimension arrays.")
+
+    if x.size < window_len:
+        raise ValueError("Input vector needs to be bigger than window size.")
+
+    if window_len < 3:
+        return x
+
+    if not window in ['flat', 'hanning', 'hamming', 'bartlett', 'blackman']:
+        raise ValueError("Window is on of 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'")
+
+    s = np.r_[x[window_len - 1:0:-1], x, x[-2:-window_len - 1:-1]]
+    # print(len(s))
+    if window == 'flat':  # moving average
+        w = np.ones(window_len, 'd')
+    else:
+        w = getattr(np, window)(window_len)
+
+    y = np.convolve(w / w.sum(), s, mode='valid')
+    return y
 
 class WParams(object):
     def __init__(self, wde):
@@ -94,9 +147,11 @@ class WParams(object):
         fun_i_dual = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
         fun_i_base = self.wave.fun_ix('base', (qx, jpow2, zs))(xs)
         omega_n = self.omega(self.n)
-        omega_n2 = omega_n * omega_n
+        omega_n1 = self.omega(self.n-1)
+        omega_n2 = omega_n * omega_n1
 
-        term1 = coeff * coeff
+        coeff_dual = (fun_i_base * self.xs_balls).sum() * omega_n
+        term1 = omega_n1 / omega_n * coeff * coeff_dual
 
         term2 = omega_n2 * (fun_i_dual * fun_i_base * self.xs_balls * self.xs_balls).sum()
 
@@ -110,14 +165,7 @@ class WParams(object):
             v = psi_i * psi_j * v1_i * deltaV_j
             vals_i[i] += v
         term3 = omega_n2 * vals_i.sum()
-        return term1, term2, term3
-
-    def calc_contribution(self, key, coeff, xs):
-        omega_n1 = self.omega(self.n - 1)
-        omega_n = self.omega(self.n)
-        term1, term2, term3 = self.calc_terms(key, coeff, xs)
-        # return omega_n1 * (term1 - term2 + term3) / omega_n
-        return omega_n1 * term1 / omega_n, omega_n1 * (term2 - term3) / omega_n
+        return term1, term2, term3, coeff * coeff_dual
 
     def calc_b2_correction(self, key, coeff, xs):
         term1, term2, term3 = self.calc_terms(key, coeff, xs)
@@ -210,7 +258,8 @@ class WaveletDensityEstimator(object):
         t0 = datetime.now()
         self._fitinit(xs)
         self.pdf = self.params.calc_pdf(self.params.coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d FIT' % (self.wave.name, self.params.n, str(self.jj0), self.delta_j)
+        self.name = '%s, n=%d, j0=%s, Dj=%d FIT #params=%d' % (self.wave.name, self.params.n, str(self.jj0),
+                                                               self.delta_j, len(self.params.coeffs))
         print('secs=', (datetime.now() - t0).total_seconds())
 
     def cvfit(self, xs):
@@ -219,7 +268,7 @@ class WaveletDensityEstimator(object):
         self._fitinit(xs, cv=True)
         coeffs = self.calc_pdf_cv(xs)
         self.pdf = self.params.calc_pdf(coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d CV #params=%d' % (self.wave.name, self.params.n, str(self.jj0),
+        self.name = '%s, n=%d, j0=%s, Dj=%d CV new #params=%d' % (self.wave.name, self.params.n, str(self.jj0),
                                                               self.delta_j, len(coeffs))
         print('secs=', (datetime.now() - t0).total_seconds())
 
@@ -236,7 +285,8 @@ class WaveletDensityEstimator(object):
                 continue
             j, qx, zs, jpow2 = key
             is_alpha = j == 0 and all([qi == 0 for qi in qx])
-            coeff2, coeff_contribution = self.params.calc_contribution(key, coeff, xs)
+            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, xs)
+            coeff_contribution = term1 - term2 + term3
             if is_alpha:
                 i += 1
                 coeffs[key] = tup
@@ -244,28 +294,73 @@ class WaveletDensityEstimator(object):
                 alpha_contribution += coeff_contribution
                 continue
             threshold = math.fabs(coeff) / math.sqrt(j + 1)
-            contributions.append(((key, tup), threshold, (coeff2, coeff_contribution)))
-        contributions.sort(key=lambda triple: -triple[1])
-        print(alpha_norm, alpha_contribution)
+            #threshold = 2 * coeff_contribution * (1 + coeff_contribution)
+            # threshold = math.fabs(coeff2 - coeff_contribution) ## <<- up and downs in run_with('mix9', 'db4', 500, 3)
+            #threshold = math.fabs(coeff2 - coeff_contribution)
+            #threshold = coeff2 - coeff_contribution
+            contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
+            #print(contributions[-1])
+        contributions.sort(key=lambda values: -values[1])
+        print('alpha_norm, alpha_contribution =', alpha_norm, alpha_contribution)
         total_contribution = alpha_contribution
         total_norm = alpha_norm
-        min_v = 0.01/self.params.n
-        print('min_v',min_v)
-        with open('data2.csv', 'w') as fh:
-            for tripple in contributions:
-                coeff2, coeff_contribution = tripple[2]
-                total_contribution += coeff_contribution
-                key, tup = tripple[0]
-                j, qx, zs, jpow2 = key
-                coeff, num = tup
-                total_norm += coeff2
-                tt = coeff_contribution < min_v
-                #print(key, '->', total_norm, '-', total_contribution, '=', total_norm - total_contribution, ('*' if tt else ''), coeff_contribution)
-                i += 1
-                fh.write('%d,%d,%f\n' % (i, j, total_norm - total_contribution))
-                if tt:
-                    continue
-                coeffs[key] = tup
+        total_i = i
+        #min_v = 0.01/self.params.n
+        #print('min_v',max_v)
+        self.vals = []
+        for values in contributions:
+            threshold = values[1]
+            term1, term2, term3, coeff2 = values[2]
+            total_norm += coeff2
+            coeff_contribution = term1 - term2 + term3
+            total_contribution += coeff_contribution
+            key, tup = values[0]
+            ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
+            self.vals.append((threshold, total_contribution))
+            i += 1
+        self.vals = np.array(self.vals)
+        approach = 'max'
+        if approach == 'max':
+            vals = smooth(self.vals[:,1], 5)
+            k = np.argmax(vals)
+            print('argmax=', k)
+            # no more than number of points min(k, self.params.n - total_i)
+            pos_k = min(k, self.params.n - total_i)
+            self.threshold = contributions[k][1]
+            self.pos_k = pos_k
+        elif approach == 'min':
+            vals = smooth(self.vals, 5)
+            k = np.argmin(vals)
+            print('argmin=', k)
+            # no more than number of points min(k, self.params.n - total_i)
+            pos_k = min(k, self.params.n - total_i)
+        else: # close to 1
+            vals = np.array(self.vals)
+            pos_neg = np.argmax(vals > min(max(vals) - 0.001, 1))
+            print('vals @ pos_neg', pos_neg, vals[max(0,pos_neg - 3): pos_neg + 3])
+            # qs = np.array([tripple[1] for tripple in contributions])
+            # pos_neg = np.argmax(qs < 0.0) - 1
+            # print('qs[..]=',qs[pos_neg-3:pos_neg+3])
+            # sum = 0.0
+            # while sum < 0.01 and pos_neg >= 0:
+            #     sum += qs[pos_neg]
+            #     pos_neg -= 1
+            # print('to-1 pos', pos_neg)
+            pos_k = min(pos_neg, self.params.n - total_i)
+        for values in contributions[:pos_k]:
+            key, tup = values[0]
+            coeffs[key] = tup
+        # remove adjacent blocks >> does not work, too much
+        # dz = int(math.log(self.params.n)/2 + 0.5)
+        # for tripple in contributions[pos_k:]:
+        #     key, tup = tripple[0]
+        #     j, qx, zs, jpow2 = key
+        #     for z0 in range(-dz,dz+1):
+        #         for z1 in range(-dz,dz+1):
+        #             zn = (zs[0] + z0, zs[1] + z1)
+        #             nkey = (j, qx, zn, jpow2)
+        #             if nkey in coeffs:
+        #                 del coeffs[nkey]
         return coeffs
 
     def mdlfit(self, xs):
