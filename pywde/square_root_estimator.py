@@ -302,7 +302,7 @@ class WaveletDensityEstimator(object):
             #print(contributions[-1])
         contributions.sort(key=lambda values: -values[1])
         print('alpha_norm, alpha_contribution =', alpha_norm, alpha_contribution)
-        total_contribution = alpha_contribution
+        target = 0.5 + 0.5 * alpha_norm - alpha_contribution
         total_norm = alpha_norm
         total_i = i
         #min_v = 0.01/self.params.n
@@ -313,11 +313,12 @@ class WaveletDensityEstimator(object):
             term1, term2, term3, coeff2 = values[2]
             total_norm += coeff2
             coeff_contribution = term1 - term2 + term3
-            total_contribution += coeff_contribution
+            target += 0.5 * coeff2 - coeff_contribution
             key, tup = values[0]
             ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
             ## self.vals.append((threshold, total_contribution))
-            self.vals.append((threshold, total_contribution))
+            ## print(key, target)
+            self.vals.append((threshold, 1 - target))
             i += 1
         self.vals = np.array(self.vals)
         approach = 'max'

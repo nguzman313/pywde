@@ -630,7 +630,7 @@ def run_with(dist_name, wave_name, nn, delta_j):
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('lap2', 'db8', 2001, 4) ## bior2.6 ## sym4 ## db4
+run_with('mix8', 'bior2.6', 2000, 4) ## bior2.6 ## sym4 ## db4
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
