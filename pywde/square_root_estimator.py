@@ -316,6 +316,7 @@ class WaveletDensityEstimator(object):
             total_contribution += coeff_contribution
             key, tup = values[0]
             ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
+            ## self.vals.append((threshold, total_contribution))
             self.vals.append((threshold, total_contribution))
             i += 1
         self.vals = np.array(self.vals)

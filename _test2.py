@@ -515,10 +515,22 @@ def plot_energy(wde, fname):
     xx = wde.vals[:,0]
     yy = wde.vals[:,1]
     plt.plot(xx, yy)
-    plt.axvline(x=wde.threshold, ymin=min(yy), ymax=max(yy), c='r')
+    plt.axvline(x=wde.threshold, c='r')
     plt.ylim(min(yy)*0.95, max(yy)*1.05)
     plt.xlabel('C')
     plt.ylabel('$B_C$')
+    plt.savefig(fname)
+    plt.close()
+    print('%s saved' % fname)
+    fname = fname.replace('.png', '2.png')
+    fig = plt.figure()
+    xx = range(wde.vals.shape[0])
+    yy = wde.vals[:,1]
+    plt.plot(xx, yy)
+    plt.axvline(x=wde.pos_k, c='r')
+    plt.ylim(min(yy)*0.95, max(yy)*1.05)
+    plt.xlabel('$i$')
+    plt.ylabel('$B_i$')
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
@@ -618,7 +630,7 @@ def run_with(dist_name, wave_name, nn, delta_j):
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('pyr1', 'sym4', 2000, 3) ## bior2.6 ## sym4 ## db4
+run_with('lap2', 'db8', 2001, 4) ## bior2.6 ## sym4 ## db4
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
