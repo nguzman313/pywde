@@ -670,6 +670,7 @@ def run_with(dist_name, wave_name, num, ix, delta_js):
 def calc_with(dist_name, wave_name, num, i0, numi, delta_js):
     dist = dist_from_code(dist_name)
     ## max_v = calc_maxv(dist)
+    yield ['dist', 'wave', 'num', 'sample_num', 'method', 'k', 'delta_j', 'loss', 'ordering', 'HD']
     for ix in range(numi):
         data = dist.rvs(num)
         i = i0 + ix
