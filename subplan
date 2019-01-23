@@ -1,0 +1,18 @@
+#!/bin/bash
+dist=$1
+wavelet=$2
+num=$3
+i0=$4
+id=$5
+ja=$6
+jb=$7
+jc=$8
+
+if [ -z "$dist" ]; then
+  echo 'Usage: qsub-plan.sh <dist> <wavelet> <num> <i0> <id> <ja> <jb> <jc>'
+  echo '       <i0> <id> : first sample, num in batch'
+  echo '       <ja> .. <jc> : J values to try'
+  exit
+fi
+# $DIST_CODE $WAVELET $NUM $I0 $ID $JA $JB $JC
+qsub -v DIST_CODE=$dist,WAVELET=$wavelet,NUM=$num,I0=$i0,ID=$id,JA=$ja,JB=$jb,JC=$jc plan.pbs
