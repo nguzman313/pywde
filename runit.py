@@ -1,9 +1,11 @@
 import numpy as np
 import math
 import random
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from mpl_toolkits.mplot3d import Axes3D
+#import matplotlib.pyplot as plt
+import itertools as itt
+import csv
+#from matplotlib import cm
+#from mpl_toolkits.mplot3d import Axes3D
 import scipy.stats as stats
 import scipy.integrate as integrate
 from functools import reduce
@@ -13,6 +15,8 @@ from statsmodels.nonparametric.kernel_density import KDEMultivariate
 
 
 from pywde.square_root_estimator import WaveletDensityEstimator, coeff_sort, coeff_sort_no_j
+
+import click
 
 
 def sign(p1, p2, p3):
@@ -189,6 +193,22 @@ class TruncatedMultiNormalD(object):
                     if num == 0:
                         break
         return np.array(data)
+
+    def _pdf(self, grid):
+        if type(grid) == tuple or type(grid) == list:
+            pos = np.stack(grid, axis=0)
+            pos = np.moveaxis(pos, 0, -1)
+        else:
+            pos = grid
+        vals = [dist.pdf(pos) for dist in self.dists]
+        pdf_vals = vals[0] * self.probs[0]
+        for i in range(len(self.probs) - 1):
+            pdf_vals = np.add(pdf_vals, vals[i+1] * self.probs[i+1])
+        #pdf_vals = pdf_vals / total
+        return pdf_vals
+
+    def pdf(self, grid):
+        return self._pdf(grid)/self.sum
 
 
 class TruncatedLaplace2D(object):
@@ -470,6 +490,16 @@ def grid_as_vector(n):
     y = np.linspace(0, 1, n)
     return np.meshgrid(x, y)
 
+
+def calc_maxv(dist):
+    grid_n = 70
+    xx, yy = grid_as_vector(grid_n)
+    zz = dist.pdf((xx, yy))
+    print('sum=', zz.mean())
+    zz_sum = zz.sum() / grid_n / grid_n  # not always near 1
+    print('int =', zz_sum)
+    return (zz / zz_sum).max()
+
 def plot_dist(fname, dist):
     grid_n = 70
     xx, yy = grid_as_vector(grid_n)
@@ -487,7 +517,6 @@ def plot_dist(fname, dist):
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
-    return max_v
 
 def plot_wde(wde, fname, dist, zlim):
     print('Plotting %s' % fname)
@@ -522,7 +551,7 @@ def plot_energy(wde, fname):
     plt.savefig(fname)
     plt.close()
     print('%s saved' % fname)
-    fname = fname.replace('.png', '2.png')
+    fname = fname.replace('energy', 'energy2')
     fig = plt.figure()
     xx = range(wde.vals.shape[0])
     yy = wde.vals[:,1]
@@ -594,28 +623,78 @@ def hellinger_distance(dist, dist_est):
     err = (diff * diff).mean()  ## !!! /2
     return err, corr_factor
 
-def fname(what, dist_name, n, wave_name, delta_j):
-    return 'pngs/%s-%04d-%s-%d-%s.png' % (dist_name, n, wave_name, delta_j, what)
 
-def run_with(dist_name, wave_name, nn, delta_j):
-    wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=1, delta_j=delta_j) # bior3.7
+def fname(what, dist_name, num=None, wave_name=None, delta_j=None, ext='.png'):
+    strn = '%04d' % num if num is not None else None
+    strd = '%d' % delta_j if delta_j is not None else None
+    strs = [dist_name, what, strn, wave_name, strd]
+    strs = [v for v in strs if v]
+    return 'pngs/%s%s' % ('-'.join(strs), ext)
+
+
+def save_data(data, fname):
+    with open(fname, 'wt') as fh:
+        writer = csv.writer(fh, delimiter='\t')
+        for row in data:
+            writer.writerow(row)
+
+@click.group()
+def main():
+    pass
+
+@main.command()
+@click.argument('dist_name', metavar="DIST_CODE")
+def plot_true(dist_name):
     dist = dist_from_code(dist_name)
-    max_v = plot_dist(fname('true', dist_name, nn, wave_name, delta_j), dist)
-    data = dist.rvs(nn)
-    wde.fit(data)
-    plot_wde(wde, fname('orig', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    # wde.mdlfit(data)
-    # plot_wde(wde, fname('hd', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    wde.cvfit(data)
-    plot_wde(wde, fname('cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    plot_energy(wde, fname('energy', dist_name, nn, wave_name, delta_j))
-    num = len(wde.params.coeffs)
-    # print('Estimating KDE')
-    # kde = KDEMultivariate(data, 'c' * data.shape[1])
-    # plot_kde(kde, fname('kde', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
-    print('Estimating KDE all data')
-    kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
-    plot_kde(kde, fname('kde_cv', dist_name, nn, wave_name, delta_j), dist, 1.1 * max_v)
+    plot_dist(fname('true', dist_name), dist)
+
+
+@main.command()
+@click.argument('dist_name', metavar="DIST_CODE")
+@click.argument('wave_name', metavar="WAVE_CODE")
+@click.argument('num', type=int)
+@click.argument('ix', type=int, nargs=2)
+@click.argument('delta_js', nargs=-1, type=int)
+# @click.option('--loss', help='Loss function', default=WaveletDensityEstimator.NEW_LOSS)
+# @click.option('--ordering', help='Ordering method', default=WaveletDensityEstimator.T_ORD)
+# @click.option('--k', type=int, default=1)
+def run_with(dist_name, wave_name, num, ix, delta_js):
+    dest = fname('results', dist_name, ext='.tab')
+    with open(dest, 'wt') as fh:
+        writer = csv.writer(fh, delimiter='\t')
+        i0, numi = ix
+        for row in calc_with(dist_name, wave_name, num, i0, numi, delta_js):
+            writer.writerow(row)
+            fh.flush()
+
+def calc_with(dist_name, wave_name, num, i0, numi, delta_js):
+    dist = dist_from_code(dist_name)
+    ## max_v = calc_maxv(dist)
+    for i in range(numi):
+        data = dist.rvs(num)
+        save_data(data, fname('data', dist_name, num=num, wave_name=wave_name, ext='(%02d).csv' % (i0 + i)))
+        print('===== %02d =====' % i)
+        for k, delta_j in itt.product([1,2], delta_js):
+            wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=k, delta_j=delta_j)
+            print('WDE', 'k=%d' % k, 'delta_j=%d' % delta_j)
+            wde.fit(data)
+            hd, corr_factor = hellinger_distance(dist, wde)
+            yield [dist_name, wave_name, num, i, 'WDE', k, delta_j, '', '', hd]
+            ## plot_wde(wde, fname('orig', dist_name, num, wave_name, delta_j), dist, 1.1 * max_v)
+            for loss, ordering in WaveletDensityEstimator.valid_options():
+                print('WDE', 'k=%d' % k, 'delta_j=%d' % delta_j, 'Loss', loss, 'Ord', ordering)
+                wde.cvfit(data, loss, ordering)
+                hd, corr_factor = hellinger_distance(dist, wde)
+                yield [dist_name, wave_name, num, i, 'WDE_CV', k, delta_j, loss, ordering, hd]
+                # what = 'new_%s.%s' % (loss, ordering)
+                # plot_wde(wde, fname(what, dist_name, num, wave_name, delta_j), dist, 1.1 * max_v)
+                # what = 'energy_%s.%s' % (loss, ordering)
+                # plot_energy(wde, fname(what, dist_name, num, wave_name, delta_j))
+        #print('Estimating KDE all data')
+        kde = KDEMultivariate(data, 'c' * data.shape[1], bw='cv_ml') ## cv_ml
+        hd, corr_factor = hellinger_distance(dist, kde)
+        yield [dist_name, wave_name, num, i, 'KDE', '', '', '', '', hd]
+        # plot_kde(kde, fname('kde_cv', dist_name, num), dist, 1.1 * max_v)
 
 
 #
@@ -630,9 +709,12 @@ def run_with(dist_name, wave_name, nn, delta_j):
 #dist = dist_from_code('tri1')
 #print(dist.rvs(10))
 #plot_dist('tri1.png', dist)
-run_with('mix8', 'bior2.6', 2000, 4) ## bior2.6 ## sym4 ## db4
 # dist = dist_from_code('pir1')
 # data = dist.rvs(1024)
 # plt.figure()
 # plt.scatter(data[:,0], data[:,1])
 # plt.show()
+
+
+if __name__ == "__main__":
+    main()

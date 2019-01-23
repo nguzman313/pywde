@@ -188,8 +188,10 @@ class WParams(object):
     def _calc_indexes(self):
         qq = self.wave.qq
         self._calc_indexes_j(0, qq[0:1])
+        print('# alphas =', len(self.coeffs.keys()))
         for j in range(self.delta_j):
             self._calc_indexes_j(j, qq[1:])
+            print('# coeffs %d =' % j, len(self.coeffs.keys()))
 
     def _calc_indexes_j(self, j, qxs):
         jj = self._jj(j)
@@ -262,17 +264,41 @@ class WaveletDensityEstimator(object):
                                                                self.delta_j, len(self.params.coeffs))
         print('secs=', (datetime.now() - t0).total_seconds())
 
-    def cvfit(self, xs):
+    def cvfit(self, xs, loss, ordering):
+        "options = dict(loss=?, ordering=?)"
+        if loss not in WaveletDensityEstimator.LOSSES:
+            raise ValueError('Wrong loss')
+        if ordering not in WaveletDensityEstimator.ORDERINGS:
+            raise ValueError('Wrong ordering')
         print('CV estimator')
         t0 = datetime.now()
         self._fitinit(xs, cv=True)
-        coeffs = self.calc_pdf_cv(xs)
+        coeffs = self.calc_pdf_cv(xs, loss, ordering)
         self.pdf = self.params.calc_pdf(coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d CV new #params=%d' % (self.wave.name, self.params.n, str(self.jj0),
-                                                              self.delta_j, len(coeffs))
+        self.name = '%s, n=%d, j0=%s, Dj=%d NEW #params=%d Lss=%s Ord=%s' % (self.wave.name, self.params.n,
+                                                                             str(self.jj0), self.delta_j, len(coeffs),
+                                                                             loss, ordering)
         print('secs=', (datetime.now() - t0).total_seconds())
 
-    def calc_pdf_cv(self, xs):
+    Q_ORD = 'Q'
+    T_ORD = 'T'
+    ORDERINGS = [Q_ORD, T_ORD]
+
+    NEW_LOSS = 'I'
+    ORIGINAL_LOSS = 'O'
+    NORMED_LOSS = 'N'
+    LOSSES = [NEW_LOSS, ORIGINAL_LOSS, NORMED_LOSS]
+
+    @staticmethod
+    def valid_options():
+        for loss in WaveletDensityEstimator.LOSSES:
+            for ordering in WaveletDensityEstimator.ORDERINGS:
+                if loss == WaveletDensityEstimator.NORMED_LOSS and ordering != WaveletDensityEstimator.T_ORD:
+                    continue
+                yield loss, ordering
+
+
+    def calc_pdf_cv(self, xs, loss, ordering):
         coeffs = {}
         contributions = []
         alpha_contribution = 0.0
@@ -293,16 +319,36 @@ class WaveletDensityEstimator(object):
                 alpha_norm += coeff2
                 alpha_contribution += coeff_contribution
                 continue
-            threshold = math.fabs(coeff) / math.sqrt(j + 1)
-            #threshold = 2 * coeff_contribution * (1 + coeff_contribution)
-            # threshold = math.fabs(coeff2 - coeff_contribution) ## <<- up and downs in run_with('mix9', 'db4', 500, 3)
-            #threshold = math.fabs(coeff2 - coeff_contribution)
-            #threshold = coeff2 - coeff_contribution
+
+            # threshold is the order-by number; here the options
+            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
+                if ordering == WaveletDensityEstimator.Q_ORD:
+                    threshold = coeff_contribution
+                else:
+                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
+            elif loss == WaveletDensityEstimator.NORMED_LOSS:
+                if ordering == WaveletDensityEstimator.T_ORD:
+                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
+                else:
+                    raise ValueError("No support for this loss-ordering combination")
+            else:  # loss == WaveletDensityEstimator.NEW_LOSS:
+                if ordering == WaveletDensityEstimator.T_ORD:
+                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
+                else:
+                    threshold = - 0.5 * coeff2 + coeff_contribution
+
             contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
-            #print(contributions[-1])
+
         contributions.sort(key=lambda values: -values[1])
         print('alpha_norm, alpha_contribution =', alpha_norm, alpha_contribution)
-        target = 0.5 + 0.5 * alpha_norm - alpha_contribution
+
+        if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
+            target_sum = -alpha_contribution
+        elif loss == WaveletDensityEstimator.NORMED_LOSS:
+            target_sum = -alpha_contribution
+        else: # loss == WaveletDensityEstimator.NEW_LOSS:
+            target_sum = 0.5 + 0.5 * alpha_norm - alpha_contribution
+
         total_norm = alpha_norm
         total_i = i
         #min_v = 0.01/self.params.n
@@ -313,11 +359,21 @@ class WaveletDensityEstimator(object):
             term1, term2, term3, coeff2 = values[2]
             total_norm += coeff2
             coeff_contribution = term1 - term2 + term3
-            target += 0.5 * coeff2 - coeff_contribution
+            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
+                target_sum += coeff_contribution
+                target = 1 - target_sum
+            elif loss == WaveletDensityEstimator.NORMED_LOSS:
+                target_sum += coeff_contribution
+                target = 1 - target_sum / total_norm
+            elif loss == WaveletDensityEstimator.NEW_LOSS:
+                target_sum += 0.5 * coeff2 - coeff_contribution
+                target = target_sum
+            else:
+                raise ValueError('Unknown loss=%s' % loss)
             key, tup = values[0]
             ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
             ## self.vals.append((threshold, total_contribution))
-            ## print(key, target)
+            ## print(key, threshold, target)
             self.vals.append((threshold, 1 - target))
             i += 1
         self.vals = np.array(self.vals)
@@ -330,12 +386,6 @@ class WaveletDensityEstimator(object):
             pos_k = min(k, self.params.n - total_i)
             self.threshold = contributions[k][1]
             self.pos_k = pos_k
-        elif approach == 'min':
-            vals = smooth(self.vals, 5)
-            k = np.argmin(vals)
-            print('argmin=', k)
-            # no more than number of points min(k, self.params.n - total_i)
-            pos_k = min(k, self.params.n - total_i)
         else: # close to 1
             vals = np.array(self.vals)
             pos_neg = np.argmax(vals > min(max(vals) - 0.001, 1))
