@@ -670,9 +670,10 @@ def run_with(dist_name, wave_name, num, ix, delta_js):
 def calc_with(dist_name, wave_name, num, i0, numi, delta_js):
     dist = dist_from_code(dist_name)
     ## max_v = calc_maxv(dist)
-    for i in range(numi):
+    for ix in range(numi):
         data = dist.rvs(num)
-        save_data(data, fname('data', dist_name, num=num, wave_name=wave_name, ext='(%02d).csv' % (i0 + i)))
+        i = i0 + ix
+        save_data(data, fname('data', dist_name, num=num, wave_name=wave_name, ext='(%02d).csv' % i))
         print('===== %02d =====' % i)
         for k, delta_j in itt.product([1,2], delta_js):
             wde = WaveletDensityEstimator(((wave_name, 0),(wave_name, 0)) , k=k, delta_j=delta_j)
