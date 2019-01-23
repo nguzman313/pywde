@@ -659,7 +659,7 @@ def plot_true(dist_name):
 # @click.option('--ordering', help='Ordering method', default=WaveletDensityEstimator.T_ORD)
 # @click.option('--k', type=int, default=1)
 def run_with(dist_name, wave_name, num, ix, delta_js):
-    dest = fname('results', dist_name, ext='.tab')
+    dest = fname('results', dist_name, ext='-%02d.tab' % ix[0])
     with open(dest, 'wt') as fh:
         writer = csv.writer(fh, delimiter='\t')
         i0, numi = ix
