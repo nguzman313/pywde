@@ -80,10 +80,10 @@ class WParams(object):
         self.xs_balls = None
         self.xs_balls_inx = None
 
-    def calc_coeffs(self, xs, cv=False):
+    def calc_coeffs(self, xs):
         self.n = xs.shape[0]
         self.ball_tree = BallTree(xs)
-        self.calculate_nearest_balls(xs, cv)
+        self.calculate_nearest_balls(xs, True)
         norm = 0.0
         omega = self.omega(self.n)
         for key in self.coeffs.keys():
@@ -118,6 +118,7 @@ class WParams(object):
             grid = np.meshgrid(x, y)
             fun.norm_const = fun(grid).mean()
         fun.dim = self.wave.dim
+        fun.nparams = len(coeffs)
         min_num = min([num for coeff, num in coeffs.values() if num > 0])
         print('>> WDE PDF')
         print('Num coeffs', len(coeffs))
@@ -245,14 +246,21 @@ class WaveletDensityEstimator(object):
         self.pdf = None
         self.thresholding = None
         self.params = None
+        self._xs = None
 
-    def _fitinit(self, xs, cv=False):
+    def _fitinit(self, xs):
+        if self._xs is xs:
+            # objec ref comparisson, do not recalc if already calculated
+            self.params = self._params
+            return
         if self.wave.dim != xs.shape[1]:
             raise ValueError("Expected data with %d dimensions, got %d" % (self.wave.dim, xs.shape[1]))
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
         self.params = WParams(self)
-        self.params.calc_coeffs(xs, cv)
+        self.params.calc_coeffs(xs)
+        self._xs = xs
+        self._params = self.params
 
     def fit(self, xs):
         "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
@@ -270,9 +278,9 @@ class WaveletDensityEstimator(object):
             raise ValueError('Wrong loss')
         if ordering not in WaveletDensityEstimator.ORDERINGS:
             raise ValueError('Wrong ordering')
-        print('CV estimator')
+        print('CV estimator: %s, %s' % (loss, ordering))
         t0 = datetime.now()
-        self._fitinit(xs, cv=True)
+        self._fitinit(xs)
         coeffs = self.calc_pdf_cv(xs, loss, ordering)
         self.pdf = self.params.calc_pdf(coeffs)
         self.name = '%s, n=%d, j0=%s, Dj=%d NEW #params=%d Lss=%s Ord=%s' % (self.wave.name, self.params.n,
@@ -280,13 +288,13 @@ class WaveletDensityEstimator(object):
                                                                              loss, ordering)
         print('secs=', (datetime.now() - t0).total_seconds())
 
-    Q_ORD = 'Q'
-    T_ORD = 'T'
+    Q_ORD = 'QTerm'
+    T_ORD = 'Traditional'
     ORDERINGS = [Q_ORD, T_ORD]
 
-    NEW_LOSS = 'I'
-    ORIGINAL_LOSS = 'O'
-    NORMED_LOSS = 'N'
+    NEW_LOSS = 'Improved'
+    ORIGINAL_LOSS = 'Original'
+    NORMED_LOSS = 'Normed'
     LOSSES = [NEW_LOSS, ORIGINAL_LOSS, NORMED_LOSS]
 
     @staticmethod
@@ -376,6 +384,9 @@ class WaveletDensityEstimator(object):
             ## print(key, threshold, target)
             self.vals.append((threshold, 1 - target))
             i += 1
+        if len(self.vals) == 0:
+            print('warning, no betas')
+            return coeffs
         self.vals = np.array(self.vals)
         approach = 'max'
         if approach == 'max':
