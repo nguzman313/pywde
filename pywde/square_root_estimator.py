@@ -90,11 +90,13 @@ class WParams(object):
             j, qx, zs, jpow2 = key
             jpow2 = np.array(jpow2)
             num = self.wave.supp_ix('dual', (qx, jpow2, zs))(xs).sum()
-            terms = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
-            coeff = (terms * self.xs_balls).sum() * omega
+            terms_d = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
+            terms_b = self.wave.fun_ix('base', (qx, jpow2, zs))(xs)
+            coeff = (terms_d * self.xs_balls).sum() * omega
+            coeff_b = (terms_b * self.xs_balls).sum() * omega
             #print('beta_{%s}' % str(key), '=', coeff)
-            self.coeffs[key] = (coeff, num)
-            norm += coeff * coeff
+            self.coeffs[key] = (coeff, coeff_b, num)
+            norm += coeff * coeff_b
         print('calc_coeffs #', len(self.coeffs), norm)
 
     def calc_pdf(self, coeffs):
@@ -103,23 +105,15 @@ class WParams(object):
             for key in coeffs.keys():
                 j, qx, zs, jpow2 = key
                 jpow2 = np.array(jpow2)
-                coeff, num = coeffs[key]
+                coeff, coeff_b, num = coeffs[key]
                 vals = coeff * self.wave.fun_ix('base', (qx, jpow2, zs))(coords)
                 xs_sum += vals
             return (xs_sum * xs_sum) / fun.norm_const
 
-        if self.wave.orthogonal:
-            fun.norm_const = sum([coeff*coeff for coeff, num in coeffs.values()])
-        else:
-            print('Biorthogonal - need numerical integration')
-            fun.norm_const = 1.0
-            x = np.linspace(0, 1, 100)
-            y = np.linspace(0, 1, 100)
-            grid = np.meshgrid(x, y)
-            fun.norm_const = fun(grid).mean()
+        fun.norm_const = sum([coeff * coeff_b for coeff, coeff_b, num in coeffs.values()])
         fun.dim = self.wave.dim
         fun.nparams = len(coeffs)
-        min_num = min([num for coeff, num in coeffs.values() if num > 0])
+        min_num = min([num for coeff, coeff_b, num in coeffs.values() if num > 0])
         print('>> WDE PDF')
         print('Num coeffs', len(coeffs))
         print('Norm', fun.norm_const)
@@ -131,13 +125,13 @@ class WParams(object):
         for key, tup in coeffs_items:
             j, qx, zs, jpow2 = key
             jpow2 = np.array(jpow2)
-            coeff, num = tup
+            coeff, coeff_b, num = tup
             vals = coeff * self.wave.fun_ix('base', (qx, jpow2, zs))(coords)
-            norm_const += coeff * coeff
+            norm_const += coeff * coeff_b
             xs_sum += vals
             yield key, (xs_sum * xs_sum) / norm_const
 
-    def calc_terms(self, key, coeff, xs):
+    def calc_terms(self, key, coeff, coeff_b, xs):
         # see paper, Q definition
         if self.xs_balls_inx is None:
             raise ValueError('Use calc_coeffs first')
@@ -151,8 +145,7 @@ class WParams(object):
         omega_n1 = self.omega(self.n-1)
         omega_n2 = omega_n * omega_n1
 
-        coeff_dual = (fun_i_base * self.xs_balls).sum() * omega_n
-        term1 = omega_n1 / omega_n * coeff * coeff_dual
+        term1 = omega_n1 / omega_n * coeff * coeff_b
 
         term2 = omega_n2 * (fun_i_dual * fun_i_base * self.xs_balls * self.xs_balls).sum()
 
@@ -166,11 +159,7 @@ class WParams(object):
             v = psi_i * psi_j * v1_i * deltaV_j
             vals_i[i] += v
         term3 = omega_n2 * vals_i.sum()
-        return term1, term2, term3, coeff * coeff_dual
-
-    def calc_b2_correction(self, key, coeff, xs):
-        term1, term2, term3 = self.calc_terms(key, coeff, xs)
-        return term2, term3
+        return term1, term2, term3, coeff * coeff_b
 
     def calc1(self, key, tup, coords, norm):
         j, qx, zs, jpow2 = key
@@ -188,6 +177,7 @@ class WParams(object):
 
     def _calc_indexes(self):
         qq = self.wave.qq
+        print('\n')
         self._calc_indexes_j(0, qq[0:1])
         print('# alphas =', len(self.coeffs.keys()))
         for j in range(self.delta_j):
@@ -198,7 +188,10 @@ class WParams(object):
         jj = self._jj(j)
         jpow2 = tuple(2 ** jj)
         for qx in qxs:
-            zs_min, zs_max = self.wave.z_range('dual', (qx, jpow2, None), self.minx, self.maxx)
+            zs_min_d, zs_max_d = self.wave.z_range('dual', (qx, jpow2, None), self.minx, self.maxx)
+            zs_min_b, zs_max_b = self.wave.z_range('base', (qx, jpow2, None), self.minx, self.maxx)
+            zs_min = np.min((zs_min_d, zs_min_b), axis=0)
+            zs_max = np.max((zs_max_d, zs_max_b), axis=0)
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
                 self.coeffs[(j, qx, zs, jpow2)] = None
 
@@ -312,14 +305,13 @@ class WaveletDensityEstimator(object):
         alpha_contribution = 0.0
         alpha_norm = 0.0
         i = 0
-        for key_tup in self.params.coeffs.items():
-            key, tup = key_tup
-            coeff, num = tup
+        for key, tup in self.params.coeffs.items():
+            coeff, coeff_b, num = tup
             if coeff == 0.0:
                 continue
             j, qx, zs, jpow2 = key
             is_alpha = j == 0 and all([qi == 0 for qi in qx])
-            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, xs)
+            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
             coeff_contribution = term1 - term2 + term3
             if is_alpha:
                 i += 1
@@ -378,7 +370,6 @@ class WaveletDensityEstimator(object):
                 target = target_sum
             else:
                 raise ValueError('Unknown loss=%s' % loss)
-            key, tup = values[0]
             ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
             ## self.vals.append((threshold, total_contribution))
             ## print(key, threshold, target)
@@ -413,17 +404,6 @@ class WaveletDensityEstimator(object):
         for values in contributions[:pos_k]:
             key, tup = values[0]
             coeffs[key] = tup
-        # remove adjacent blocks >> does not work, too much
-        # dz = int(math.log(self.params.n)/2 + 0.5)
-        # for tripple in contributions[pos_k:]:
-        #     key, tup = tripple[0]
-        #     j, qx, zs, jpow2 = key
-        #     for z0 in range(-dz,dz+1):
-        #         for z1 in range(-dz,dz+1):
-        #             zn = (zs[0] + z0, zs[1] + z1)
-        #             nkey = (j, qx, zn, jpow2)
-        #             if nkey in coeffs:
-        #                 del coeffs[nkey]
         return coeffs
 
     def mdlfit(self, xs):

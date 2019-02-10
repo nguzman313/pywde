@@ -11,9 +11,9 @@ from .conftest import intersect_2d, assert_almost_equal
 def mock_wde_1():
     obj = mock.Mock()
     obj.k = 1
-    obj.wave = WaveletTensorProduct(('db2', 'db1'))
+    obj.wave = WaveletTensorProduct(('db2', 'bior2.4'))
     obj.jj0 = np.array([0, 1])
-    obj.delta_j = 1
+    obj.delta_j = 2
     return obj
 
 @pytest.fixture
@@ -51,8 +51,9 @@ def test_wparam_calc_indexes_zz(mock_wde_1_with_data):
     for tup in wparams.coeffs.keys():
         j, qq, zz, jpow2 = tup
         jpow2 = np.array(jpow2)
-        fun = wde.wave.fun_ix('dual', (qq, jpow2, zz))
-        assert intersect_2d((wde.minx, wde.maxx), fun.support)
+        fun_d = wde.wave.fun_ix('dual', (qq, jpow2, zz))
+        fun_b = wde.wave.fun_ix('base', (qq, jpow2, zz))
+        assert intersect_2d(fun_d.support, (wde.minx, wde.maxx)) or intersect_2d(fun_b.support, (wde.minx, wde.maxx))
 
 
 def test_balls(mock_wde_1_with_data):
@@ -66,12 +67,12 @@ def test_betas(mock_wde_1_with_data):
     wde, data = mock_wde_1_with_data
     wparams = WParams(wde)
     wparams.calc_coeffs(data)
-    coeff, num = wparams.coeffs[(0, (1,1), (0,0), (1,2))]
-    assert_almost_equal(0.452659, coeff, 3)
-    assert num == 1
-    coeff, num = wparams.coeffs[(0, (1,1), (0,-1), (1,2))]
-    assert_almost_equal(0.871158, coeff, 3)
-    assert num == 2
+    coeff_d, coeff_b, num = wparams.coeffs[(0, (1,1), (0,0), (1,2))]
+    assert_almost_equal(0.018246, coeff_d, 3) # TODO check and coeff_b
+    assert num == 3                           # TODO check
+    coeff_d, coeff_b, num = wparams.coeffs[(0, (1,1), (0,-1), (1,2))]
+    assert_almost_equal(-0.321740, coeff_d, 3) # TODO check and coeff_b
+    assert num == 3                            # TODO check
 
 
 def _test_wparam_calc_coeffs_no_cv(mock_wde_with_data):
