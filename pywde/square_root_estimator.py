@@ -1,12 +1,15 @@
 import math
 import numpy as np
 import itertools as itt
+from collections import namedtuple
 from .common import all_zs_tensor
 from sklearn.neighbors import BallTree
 from scipy.special import gamma
 from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
+
+ThresholdResult = namedtuple('ThresholdResult', ['threshold', 'pos_k', 'values', 'msg'])
 
 # from scipy cookbook
 def smooth(x, window_len=11, window='hanning'):
@@ -265,20 +268,20 @@ class WaveletDensityEstimator(object):
                                                                self.delta_j, len(self.params.coeffs))
         print('secs=', (datetime.now() - t0).total_seconds())
 
-    def cvfit(self, xs, loss, ordering):
+    def cvfit(self, xs, loss, ordering, is_single=True):
         "options = dict(loss=?, ordering=?)"
         if loss not in WaveletDensityEstimator.LOSSES:
             raise ValueError('Wrong loss')
         if ordering not in WaveletDensityEstimator.ORDERINGS:
             raise ValueError('Wrong ordering')
-        print('CV estimator: %s, %s' % (loss, ordering))
+        print('CV estimator: %s, %s; single %s' % (loss, ordering, str(is_single)))
         t0 = datetime.now()
         self._fitinit(xs)
-        coeffs = self.calc_pdf_cv(xs, loss, ordering)
+        coeffs = self.calc_pdf_cv(xs, loss, ordering, is_single)
         self.pdf = self.params.calc_pdf(coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d NEW #params=%d Lss=%s Ord=%s' % (self.wave.name, self.params.n,
+        self.name = '%s, n=%d, j0=%s, Dj=%d #params=%d Lss=%s Ord=%s' % (self.wave.name, self.params.n,
                                                                              str(self.jj0), self.delta_j, len(coeffs),
-                                                                             loss, ordering)
+                                                                             loss[:3], ordering[:3])
         print('secs=', (datetime.now() - t0).total_seconds())
 
     Q_ORD = 'QTerm'
@@ -294,17 +297,14 @@ class WaveletDensityEstimator(object):
     def valid_options():
         for loss in WaveletDensityEstimator.LOSSES:
             for ordering in WaveletDensityEstimator.ORDERINGS:
-                if loss == WaveletDensityEstimator.NORMED_LOSS and ordering != WaveletDensityEstimator.T_ORD:
-                    continue
                 yield loss, ordering
 
 
-    def calc_pdf_cv(self, xs, loss, ordering):
+    def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
         coeffs = {}
         contributions = []
         alpha_contribution = 0.0
         alpha_norm = 0.0
-        i = 0
         for key, tup in self.params.coeffs.items():
             coeff, coeff_b, num = tup
             if coeff == 0.0:
@@ -314,7 +314,6 @@ class WaveletDensityEstimator(object):
             term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
             coeff_contribution = term1 - term2 + term3
             if is_alpha:
-                i += 1
                 coeffs[key] = tup
                 alpha_norm += coeff2
                 alpha_contribution += coeff_contribution
@@ -330,7 +329,8 @@ class WaveletDensityEstimator(object):
                 if ordering == WaveletDensityEstimator.T_ORD:
                     threshold = math.fabs(coeff) / math.sqrt(j + 1)
                 else:
-                    raise ValueError("No support for this loss-ordering combination")
+                    # Hard to justify
+                    threshold = coeff_contribution
             else:  # loss == WaveletDensityEstimator.NEW_LOSS:
                 if ordering == WaveletDensityEstimator.T_ORD:
                     threshold = math.fabs(coeff) / math.sqrt(j + 1)
@@ -339,21 +339,71 @@ class WaveletDensityEstimator(object):
 
             contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
 
+        if single_threshold:
+            self.threshold = self.single_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
+            print('Single threshold:', self.threshold.threshold, self.threshold.pos_k, 'params =', len(coeffs))
+            return coeffs
+
+        self.thresholds = self.multi_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
+        print('Multi-threshold: params =', len(coeffs))
+        for threshold in self.thresholds:
+            print(threshold.msg, '=', threshold.threshold, threshold.pos_k)
+        return coeffs
+
+    def multi_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution):
+        current_norm, current_contribution = alpha_norm, alpha_contribution
+        thresholds = []
+        for j in range(self.delta_j):
+            # TODO : remove interacting w/ removed ones; and/or define this 0.1 thingy
+            fx = lambda values: values[0][0][0] == j and math.fabs(values[1]) > 0.1/self.params.n
+            contributions_j = list(filter(fx, contributions))
+            if not contributions_j:
+                print('nothing at j=%d' % j)
+                continue
+            vals_j = self.calc_c_function(contributions_j, current_norm, current_contribution, loss)
+            if len(vals_j) == 0:
+                continue
+            k = self.pos_k_max(vals_j, self.params.n - len(coeffs))
+            # import code
+            # code.interact(banner='At j=%d' % j, local=locals())
+            threshold = ThresholdResult(contributions_j[k][1], k, vals_j, '%d' % j)
+            thresholds.append(threshold)
+            for values in contributions_j[:k]:
+                key, tup = values[0]
+                term1, term2, term3, coeff2 = values[2]
+                coeff_contribution = term1 - term2 + term3
+                current_norm += coeff2
+                current_contribution += coeff_contribution
+                coeffs[key] = tup
+        return thresholds
+
+    def single_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution):
+        # self.calc_c_function(contributions, alpha_norm, alpha_contribution)
+        if len(coeffs) >= self.params.n:
+            # do not go beyond number of observations
+            return ThresholdResult(0, -1, np.array([]), 'Too many params')
+        vals = self.calc_c_function(contributions, alpha_norm, alpha_contribution, loss)
+        if len(vals) == 0:
+            return ThresholdResult(0, -1, np.array([]), 'No betas')
+        k = self.pos_k_max(vals, self.params.n - len(coeffs))
+        for values in contributions[:k]:
+            key, tup = values[0]
+            coeffs[key] = tup
+        return ThresholdResult(contributions[k][1], k, vals, 'All')
+
+    def calc_c_function(self, contributions, curr_norm, curr_contribution, loss):
         contributions.sort(key=lambda values: -values[1])
-        print('alpha_norm, alpha_contribution =', alpha_norm, alpha_contribution)
+        print('curr_norm, curr_contribution =', curr_norm, curr_contribution)
 
         if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
-            target_sum = -alpha_contribution
+            target_sum = -curr_contribution
         elif loss == WaveletDensityEstimator.NORMED_LOSS:
-            target_sum = -alpha_contribution
+            target_sum = -curr_contribution
         else: # loss == WaveletDensityEstimator.NEW_LOSS:
-            target_sum = 0.5 + 0.5 * alpha_norm - alpha_contribution
+            target_sum = 0.5 + 0.5 * curr_norm - curr_contribution
 
-        total_norm = alpha_norm
-        total_i = i
-        #min_v = 0.01/self.params.n
-        #print('min_v',max_v)
-        self.vals = []
+        total_norm = curr_norm
+        vals = []
         for values in contributions:
             threshold = values[1]
             term1, term2, term3, coeff2 = values[2]
@@ -370,41 +420,12 @@ class WaveletDensityEstimator(object):
                 target = target_sum
             else:
                 raise ValueError('Unknown loss=%s' % loss)
-            ## print(key, coeff2, coeff_contribution, 'tots : ', total_norm, total_contribution) ## << print Q
-            ## self.vals.append((threshold, total_contribution))
-            ## print(key, threshold, target)
-            self.vals.append((threshold, 1 - target))
-            i += 1
-        if len(self.vals) == 0:
-            print('warning, no betas')
-            return coeffs
-        self.vals = np.array(self.vals)
-        approach = 'max'
-        if approach == 'max':
-            vals = smooth(self.vals[:,1], 5)
-            k = np.argmax(vals)
-            print('argmax=', k)
-            # no more than number of points min(k, self.params.n - total_i)
-            pos_k = min(k, self.params.n - total_i)
-            self.threshold = contributions[k][1]
-            self.pos_k = pos_k
-        else: # close to 1
-            vals = np.array(self.vals)
-            pos_neg = np.argmax(vals > min(max(vals) - 0.001, 1))
-            print('vals @ pos_neg', pos_neg, vals[max(0,pos_neg - 3): pos_neg + 3])
-            # qs = np.array([tripple[1] for tripple in contributions])
-            # pos_neg = np.argmax(qs < 0.0) - 1
-            # print('qs[..]=',qs[pos_neg-3:pos_neg+3])
-            # sum = 0.0
-            # while sum < 0.01 and pos_neg >= 0:
-            #     sum += qs[pos_neg]
-            #     pos_neg -= 1
-            # print('to-1 pos', pos_neg)
-            pos_k = min(pos_neg, self.params.n - total_i)
-        for values in contributions[:pos_k]:
-            key, tup = values[0]
-            coeffs[key] = tup
-        return coeffs
+            vals.append((threshold, 1 - target))
+        return np.array(vals)
+
+    def pos_k_max(self, vals, max_params):
+        vals_smooth = smooth(vals[:, 1], 5)
+        return min(np.argmax(vals_smooth), max_params)
 
     def mdlfit(self, xs):
         print('MDL-like estimator')
