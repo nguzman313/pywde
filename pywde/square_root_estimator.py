@@ -297,8 +297,8 @@ class WaveletDensityEstimator(object):
     def valid_options():
         for loss in WaveletDensityEstimator.LOSSES:
             for ordering in WaveletDensityEstimator.ORDERINGS:
-                yield loss, ordering
-
+                yield loss, ordering, True
+                yield loss, ordering, False
 
     def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
         coeffs = {}
@@ -366,7 +366,10 @@ class WaveletDensityEstimator(object):
             k = self.pos_k_max(vals_j, self.params.n - len(coeffs))
             # import code
             # code.interact(banner='At j=%d' % j, local=locals())
-            threshold = ThresholdResult(contributions_j[k][1], k, vals_j, '%d' % j)
+            if k >= len(contributions_j):
+                threshold = ThresholdResult(contributions_j[-1][1], len(contributions_j), vals_j, '%d' % j)
+            else:
+                threshold = ThresholdResult(contributions_j[k][1], k, vals_j, '%d' % j)
             thresholds.append(threshold)
             for values in contributions_j[:k]:
                 key, tup = values[0]
