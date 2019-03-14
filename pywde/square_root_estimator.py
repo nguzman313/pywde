@@ -86,7 +86,7 @@ class WParams(object):
     def calc_coeffs(self, xs):
         self.n = xs.shape[0]
         self.ball_tree = BallTree(xs)
-        self.calculate_nearest_balls(xs, True)
+        self.calculate_nearest_balls(xs)
         norm = 0.0
         omega = self.omega(self.n)
         for key in self.coeffs.keys():
@@ -153,14 +153,16 @@ class WParams(object):
         term2 = omega_n2 * (fun_i_dual * fun_i_base * self.xs_balls * self.xs_balls).sum()
 
         vals_i = np.zeros(self.n)
+        obj = self
         for j in range(self.n):
-            i = self.xs_balls_inx[j,-1]
-            psi_i = fun_i_base[i]
             psi_j = fun_i_dual[j]
-            v1_i = self.xs_balls[i]
-            deltaV_j = self.xs_balls2[j] - self.xs_balls[i]
-            v = psi_i * psi_j * v1_i * deltaV_j
-            vals_i[i] += v
+            deltaV_j = self.xs_balls2[j] - self.xs_balls[j]
+            for k in range(self.k):
+                i = self.xs_balls_inx[j, k+1] # position 0 is x_j
+                psi_i = fun_i_base[i]
+                v1_i = self.xs_balls[i]
+                v = psi_i * psi_j * v1_i * deltaV_j
+                vals_i[i] += v
         term3 = omega_n2 * vals_i.sum()
         return term1, term2, term3, coeff * coeff_b
 
@@ -206,20 +208,16 @@ class WParams(object):
         "Bias correction for k-th nearest neighbours sum for sample size n"
         return gamma(self.k) / gamma(self.k + 0.5) / math.sqrt(n)
 
-    def calculate_nearest_balls(self, xs, cv):
-        if cv:
-            k = self.k + 1
-            ix = -2
-        else:
-            k = self.k
-            ix = -1
+    def calculate_nearest_balls(self, xs):
+        "Calculate and store (k+1)-th nearest balls"
+        k = self.k + 1
+        ix = -2
         dist, inx = self.ball_tree.query(xs, k + 1)
         k_near_radious = dist[:, ix:]
         xs_balls = np.power(k_near_radious, self.wave.dim / 2.0)
         self.xs_balls = xs_balls[:, ix] * self.sqrt_vunit()
-        if cv:
-            self.xs_balls2 = xs_balls[:, -1] * self.sqrt_vunit()
-            self.xs_balls_inx = inx
+        self.xs_balls2 = xs_balls[:, -1] * self.sqrt_vunit()
+        self.xs_balls_inx = inx
 
     def _jj(self, j):
         return np.array([j0 + j for j0 in self.jj0])
