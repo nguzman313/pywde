@@ -283,8 +283,9 @@ class WaveletDensityEstimator(object):
         print('secs=', (datetime.now() - t0).total_seconds())
 
     Q_ORD = 'QTerm'
+    AQ_ORD = 'AbsQTerm'
     T_ORD = 'Traditional'
-    ORDERINGS = [Q_ORD, T_ORD]
+    ORDERINGS = [Q_ORD, AQ_ORD, T_ORD]
 
     NEW_LOSS = 'Improved'
     ORIGINAL_LOSS = 'Original'
@@ -292,11 +293,10 @@ class WaveletDensityEstimator(object):
     LOSSES = [NEW_LOSS, ORIGINAL_LOSS, NORMED_LOSS]
 
     @staticmethod
-    def valid_options():
+    def valid_options(is_single):
         for loss in WaveletDensityEstimator.LOSSES:
             for ordering in WaveletDensityEstimator.ORDERINGS:
-                yield loss, ordering, True
-                yield loss, ordering, False
+                yield loss, ordering, is_single
 
     def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
         coeffs = {}
@@ -318,22 +318,18 @@ class WaveletDensityEstimator(object):
                 continue
 
             # threshold is the order-by number; here the options
-            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
-                if ordering == WaveletDensityEstimator.Q_ORD:
-                    threshold = coeff_contribution
-                else:
-                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
-            elif loss == WaveletDensityEstimator.NORMED_LOSS:
-                if ordering == WaveletDensityEstimator.T_ORD:
-                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
-                else:
-                    # Hard to justify
-                    threshold = coeff_contribution
-            else:  # loss == WaveletDensityEstimator.NEW_LOSS:
-                if ordering == WaveletDensityEstimator.T_ORD:
-                    threshold = math.fabs(coeff) / math.sqrt(j + 1)
-                else:
+            if ordering == WaveletDensityEstimator.T_ORD:
+                threshold = math.fabs(coeff) / math.sqrt(j + 1)
+            elif ordering == WaveletDensityEstimator.Q_ORD:
+                if loss == WaveletDensityEstimator.NEW_LOSS:
                     threshold = - 0.5 * coeff2 + coeff_contribution
+                else:
+                    threshold = coeff_contribution
+            else: # ordering == WaveletDensityEstimator.AQ_ORD
+                if loss == WaveletDensityEstimator.NEW_LOSS:
+                    threshold = math.fabs(- 0.5 * coeff2 + coeff_contribution)
+                else:
+                    threshold = math.fabs(coeff_contribution)
 
             contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
 
