@@ -422,7 +422,7 @@ class WaveletDensityEstimator(object):
 
     def pos_k_max(self, vals, max_params):
         vals_smooth = smooth(vals[:, 1], 5)
-        return min(np.argmax(vals_smooth), max_params)
+        return min(np.argmax(vals_smooth), max_params, vals.shape[0]-1)
 
     def mdlfit(self, xs):
         print('MDL-like estimator')
