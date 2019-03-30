@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
 
-ThresholdResult = namedtuple('ThresholdResult', ['threshold', 'pos_k', 'target_val', 'values', 'sorted_kept', 'msg'])
+ThresholdResult = namedtuple('ThresholdResult', ['threshold', 'pos_k', 'target_val', 'values', 'sorted_contrib', 'msg'])
 
 # from scipy cookbook
 def smooth(x, window_len=11, window='hanning'):
@@ -314,10 +314,14 @@ class WaveletDensityEstimator(object):
                 yield loss, ordering, is_single
 
     def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
+        if self.delta_j == 0:
+            raise ValueError('Cannot do CV over alpha only ... yet')
         coeffs = {}
+        alpha_contributions = []
         contributions = []
         alpha_contribution = 0.0
         alpha_norm = 0.0
+        fun = WaveletDensityEstimator.ORDERINGS[ordering]
         for key, tup in self.params.coeffs.items():
             coeff, coeff_b, num = tup
             if coeff == 0.0:
@@ -327,75 +331,58 @@ class WaveletDensityEstimator(object):
             term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
             coeff_contribution = term1 - term2 + term3
             if is_alpha:
-                coeffs[key] = tup
-                alpha_norm += coeff2
-                alpha_contribution += coeff_contribution
+                if True: #coeff_contribution > 0:
+                    coeffs[key] = tup
+                    alpha_norm += coeff2
+                    alpha_contribution += coeff_contribution
+                    # TODO: alpha could be filtered for Q > 0 (!!)
+                    # threshold = fun(coeff, coeff2, coeff_contribution, j)
+                    # alpha_contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
                 continue
 
             # threshold is the order-by number; here the options
-            fun = WaveletDensityEstimator.ORDERINGS[ordering]
             threshold = fun(coeff, coeff2, coeff_contribution, j)
             contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
 
+        print('alphas =', len(coeffs))
+
         if single_threshold:
             self.threshold = self.single_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
-            for values in self.threshold.sorted_kept:
+            for values in self.threshold.sorted_contrib[:self.threshold.pos_k + 1]:
                 key, tup = values[0]
                 coeffs[key] = tup
             return coeffs
 
         threshold = self.single_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
+
         threshold_c = threshold.threshold
-        self.thresholds = self.multi_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution,
+        self.thresholds = self.multi_threshold(coeffs, loss, threshold.sorted_contrib, alpha_norm, alpha_contribution,
                                                threshold_c, threshold.target_val)
         for a_threshold in self.thresholds:
-            for values in a_threshold.sorted_kept:
+            for values in a_threshold.sorted_contrib[:a_threshold.pos_k + 1]:
                 key, tup = values[0]
                 coeffs[key] = tup
         print('Multi-threshold: params =', len(coeffs))
         return coeffs
 
     class StateJ:
-        def __init__(self, j, contribs):
+        def __init__(self, j, contribs, threshold_c):
             self.j = j
-            self.contribs = sorted(contribs, key=lambda tup: -tup[1])
+            self.contribs = contribs
             self.len_contribs = len(contribs)
-            self.curr_k = None
-            self.batta_sum = None
-            self.norm_sum = None
+            self.curr_k = np.argmin(np.array([v[1] for v in self.contribs]) >= threshold_c) - 1
+            batta_sum = np.array([(term1 - term2 + term3) for _, _, (term1, term2, term3, _) in self.contribs])
+            self.batta_sums = np.cumsum(batta_sum)
+            norm_sum = np.array([coeff2 for _, _, (_, _, _, coeff2) in self.contribs])
+            self.norm_sums = np.cumsum(norm_sum)
             self.dk = 0
-            self.adj_batta_sum = None
-            self.adj_norm_sum = None
-
-        def reset_at(self, threshold_c):
-            self.curr_k = np.argmin(np.array([v[1] for v in self.contribs]) >= threshold_c)
-            self.batta_sum = sum([(term1 - term2 + term3)
-                               for _, _, (term1, term2, term3, _) in self.contribs[:self.curr_k + 1]])
-            self.norm_sum = sum([coeff2
-                               for _, _, (_, _, _, coeff2) in self.contribs[:self.curr_k + 1]])
 
         def dk_ok(self):
             new_k = self.curr_k + self.dk
             return 0 <= new_k < self.len_contribs
 
-        def adjust_sums(self):
-            if self.dk == 0:
-                self.adj_batta_sum = self.batta_sum
-                self.adj_norm_sum = self.norm_sum
-                return
-            if self.dk == -1:
-                _, _, (term1, term2, term3, coeff2) = self.contribs[self.curr_k]
-                self.adj_batta_sum = self.batta_sum - (term1 - term2 + term3)
-                self.adj_norm_sum = self.norm_sum - coeff2
-            else: # self.dk = +1
-                _, _, (term1, term2, term3, coeff2) = self.contribs[self.curr_k + 1]
-                self.adj_batta_sum = self.batta_sum + (term1 - term2 + term3)
-                self.adj_norm_sum = self.norm_sum + coeff2
-
         def set_new(self):
             self.curr_k += self.dk
-            self.batta_sum = self.adj_batta_sum
-            self.norm_sum = self.adj_norm_sum
 
         def as_result(self, target_val):
             # 'threshold', 'pos_k', 'target_val', 'values', 'sorted_kept', 'msg'
@@ -404,17 +391,26 @@ class WaveletDensityEstimator(object):
                 self.curr_k,
                 target_val,
                 None,
-                self.contribs[:self.curr_k+1],
-                'Multi'
+                self.contribs,
+                'Multi dj=%d' % self.j
             )
+
+        def batta_sum(self):
+            if not self.dk_ok():
+                return 0.0
+            return self.batta_sums[self.curr_k + self.dk]
+
+        def norm_sum(self):
+            if not self.dk_ok():
+                return 0.0
+            return self.norm_sums[self.curr_k + self.dk]
 
 
     class StateWDE:
-        def __init__(self, loss, alpha_contrib, alpha_norm):
+        def __init__(self, loss, alpha_norm, alpha_contrib):
             self.levels = []
-            self.alpha_contrib = alpha_contrib
             self.alpha_norm = alpha_norm
-            self.target = None
+            self.alpha_contrib = alpha_contrib
             if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
                 self.lossfn = lambda batta_sum, norm_sum : 1 - batta_sum
             elif loss == WaveletDensityEstimator.NORMED_LOSS:
@@ -424,25 +420,13 @@ class WaveletDensityEstimator(object):
 
         def append(self, state_j):
             self.levels.append(state_j)
-            self.target = None
 
         def eval_target(self):
-            if self.target:
-                return self.target
             batta_sum = self.alpha_contrib
             norm_sum = self.alpha_norm
             for state_j in self.levels:
-                batta_sum += state_j.batta_sum
-                norm_sum += state_j.norm_sum
-            self.target = self.lossfn(batta_sum, norm_sum)
-            return self.target
-
-        def eval_adj_target(self):
-            batta_sum = self.alpha_contrib
-            norm_sum = self.alpha_norm
-            for state_j in self.levels:
-                batta_sum += state_j.adj_batta_sum
-                norm_sum += state_j.adj_norm_sum
+                batta_sum += state_j.batta_sum()
+                norm_sum += state_j.norm_sum()
             return self.lossfn(batta_sum, norm_sum)
 
         def curr_ks(self):
@@ -452,26 +436,27 @@ class WaveletDensityEstimator(object):
             return [state_j.contribs[state_j.curr_k][1] for state_j in self.levels]
 
 
-    def multi_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution, threshold_c, loss_val):
+    def multi_threshold(self, coeffs, loss, sorted_contributions, alpha_norm, alpha_contribution, threshold_c, loss_val):
         # determine current posk for each level
         # contributions = list of (key, tup), threshold, (term1, term2, term3, coeff2)
         # key is j, qx, zs, jpow2
-        state_wde = WaveletDensityEstimator.StateWDE(loss, alpha_contribution, alpha_norm)
+        state_wde = WaveletDensityEstimator.StateWDE(loss, alpha_norm, alpha_contribution)
         for j in range(self.delta_j):
-            state_j = WaveletDensityEstimator.StateJ(j, list(filter(lambda tup: tup[0][0][0] == j, contributions)))
-            state_j.reset_at(threshold_c)
+            contrib_j = list(filter(lambda tup: tup[0][0][0] == j, sorted_contributions))
+            state_j = WaveletDensityEstimator.StateJ(j, contrib_j, threshold_c)
             state_wde.append(state_j)
 
-        # TODO determine Sum Q ans Sum Norm for current threshold
         ok = True
         current_val = state_wde.eval_target()
         trace = [(state_wde.curr_ks(), current_val, state_wde.curr_cs())]
         print('> done setting up state - multi', current_val, '(orig %f)' % loss_val)
 
+        # TODO, there is a minor tiny difference between this current_val and the result from single threshold (?!)
+
         while ok:
             ok = False
             best_dk_js = None
-            print(trace[-1])
+            # print(trace[-1])
 
             for dk_js in itt.product([-1,0,1], repeat=self.delta_j):
                 if all([dk_j == 0 for dk_j in dk_js]):
@@ -484,12 +469,10 @@ class WaveletDensityEstimator(object):
                     # omit if we go beyond any of the levels
                     continue
                 # recalc sums for new positions
-                for j in range(self.delta_j):
-                    state_wde.levels[j].adjust_sums()
-                new_val = state_wde.eval_adj_target()
+                new_val = state_wde.eval_target()
                 #
                 # Intermediate values on the grid
-                #> print(dk_js, '>', new_val)
+                #  print(dk_js, '>', new_val)
                 #
                 if new_val < current_val:
                     ok = True
@@ -501,24 +484,19 @@ class WaveletDensityEstimator(object):
                 print('>> improved @', best_dk_js, current_val)
                 for j in range(self.delta_j):
                     state_wde.levels[j].dk = best_dk_js[j]
-                    state_wde.levels[j].adjust_sums()
                     state_wde.levels[j].set_new()
                 trace.append((state_wde.curr_ks(), current_val, state_wde.curr_cs()))
         thresholds = [state_j.as_result(current_val) for state_j in state_wde.levels]
         return thresholds
 
     def single_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution):
-        # self.calc_c_function(contributions, alpha_norm, alpha_contribution)
-        if len(coeffs) >= self.params.n:
-            # do not go beyond number of observations
-            return ThresholdResult(0, -1, 1.0, np.array([]), np.array([]), 'Too many params')
         vals, sorted_cont = self.calc_c_function(contributions, alpha_norm, alpha_contribution, loss)
         if len(vals) == 0:
             return ThresholdResult(0, -1, 1.0, np.array([]), np.array([]), 'No betas')
         k = self.pos_k_min(vals, self.params.n - len(coeffs))
         threshold, target_val = vals[k,:]
         print('single threshold', len(sorted_cont), '=> (at %d)' % k, 'C =', threshold, 'V =',target_val, '(%s)' % loss)
-        return ThresholdResult(threshold, k, target_val, vals, sorted_cont[:k], 'All')
+        return ThresholdResult(threshold, k, target_val, vals, sorted_cont, 'All')
 
     def calc_c_function(self, contributions, curr_norm, curr_contribution, loss):
         contributions = sorted(contributions, key=lambda values: -values[1])
