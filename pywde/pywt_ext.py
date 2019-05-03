@@ -89,10 +89,18 @@ class Wavelet(pywt.Wavelet):
     1992, Chui, Wang, "On Compactly Supported Spline Wavelets and a Duality Principle")
     """
     def __init__(self, wave_name):
+        self._name = wave_name
         self.wave = pywt.Wavelet(wave_name)
         self.support = wave_support_info(self.wave)
         self.funs = calc_wavefuns(self.wave, self.support)
         self.dim = 1
+
+    def to_dict(self):
+        return {'_name': self._name}
+
+    @staticmethod
+    def from_dict(a_dict):
+        return Wavelet(a_dict['_name'])
 
     @property
     def phi_prim(self, ix=(1, 0)):
@@ -191,6 +199,22 @@ class WaveletTensorProduct(object):
         self.orthogonal = all([wave.orthogonal for wave in self.waves])
         self.qq = list(itt.product(range(2), repeat=self.dim))
         self.name = 'x'.join(wave_names)
+
+    def to_dict(self):
+        return dict(
+            waves=[wave.to_dict() for wave in self.waves],
+            name=self.name
+        )
+
+    @staticmethod
+    def from_dict(a_dict):
+        resp = WaveletTensorProduct([])
+        resp.dim = len(a_dict['waves'])
+        resp.waves = [Wavelet.from_dict(wdesc) for wdesc in a_dict['waves']]
+        resp.orthogonal = all([wave.orthogonal for wave in resp.waves])
+        resp.qq = list(itt.product(range(2), repeat=resp.dim))
+        resp.name = a_dict['name']
+        return resp
 
     def __repr__(self):
         spec = ','.join([wave.name for wave in self.waves])

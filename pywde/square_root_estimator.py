@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .pywt_ext import WaveletTensorProduct
 
-ThresholdResult = namedtuple('ThresholdResult', ['threshold', 'pos_k', 'target_val', 'values', 'sorted_contrib', 'msg'])
+ThresholdResult = namedtuple('ThresholdResult', ['threshold', 'pos_k', 'target_val', 'values', 'sorted_contrib', 'th_j', 'msg'])
 
 # from scipy cookbook
 def smooth(x, window_len=11, window='hanning'):
@@ -67,7 +67,7 @@ def smooth(x, window_len=11, window='hanning'):
     return y
 
 class WParams(object):
-    def __init__(self, wde):
+    def __init__(self, wde, with_betas=True):
         self.k = wde.k
         self.wave = wde.wave
         self.jj0 = wde.jj0
@@ -75,7 +75,7 @@ class WParams(object):
         self.coeffs = {}
         self.minx = wde.minx
         self.maxx = wde.maxx
-        self._calc_indexes()
+        self._calc_indexes(with_betas)
         self.n = 0
         self.pdf = None
         self.test = None
@@ -83,13 +83,30 @@ class WParams(object):
         self.xs_balls = None
         self.xs_balls_inx = None
 
-    def calc_coeffs(self, xs):
+    def to_dict(self):
+        return dict(
+            k=self.k,
+            wave=self.wave.to_dict(),
+            jj0=self.jj0.tolist(),
+            delta_j=self.delta_j,
+            coeffs=self.coeffs,
+        )
+
+    @staticmethod
+    def from_dict(a_dict):
+        return None
+
+    def pre_coeffs(self, xs):
         self.n = xs.shape[0]
         self.ball_tree = BallTree(xs)
         self.calculate_nearest_balls(xs)
+
+    def calc_coeffs(self, xs):
         norm = 0.0
         omega = self.omega(self.n)
         for key in self.coeffs.keys():
+            if self.coeffs[key] is not None:
+                continue
             j, qx, zs, jpow2 = key
             jpow2 = np.array(jpow2)
             num = self.wave.supp_ix('dual', (qx, jpow2, zs))(xs).sum()
@@ -113,9 +130,13 @@ class WParams(object):
                 xs_sum += vals
             return (xs_sum * xs_sum) / fun.norm_const
 
+        def to_dict(a_fun):
+            return {'coeffs': coeffs}
+
         fun.norm_const = sum([coeff * coeff_b for coeff, coeff_b, num in coeffs.values()])
         fun.dim = self.wave.dim
         fun.nparams = len(coeffs)
+        fun.to_dict = to_dict
         min_num = min([num for coeff, coeff_b, num in coeffs.values() if num > 0])
         print('>> WDE PDF')
         print('Num coeffs', len(coeffs))
@@ -142,6 +163,9 @@ class WParams(object):
         j, qx, zs, jpow2 = key
         jpow2 = np.array(jpow2)
 
+        # import code
+        # code.interact('calc_terms **', local=locals())
+
         fun_i_dual = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
         fun_i_base = self.wave.fun_ix('base', (qx, jpow2, zs))(xs)
         omega_n = self.omega(self.n)
@@ -157,6 +181,8 @@ class WParams(object):
         for j in range(self.n):
             psi_j = fun_i_dual[j]
             deltaV_j = self.xs_balls2[j] - self.xs_balls[j]
+            # TODO: what if just do k = self.k ?? (or even k=1) ??
+            ## for k in [self.k - 1]:
             for k in range(self.k):
                 i = self.xs_balls_inx[j, k+1] # position 0 is x_j
                 psi_i = fun_i_base[i]
@@ -180,14 +206,20 @@ class WParams(object):
             xs_sum = np.zeros(coords.shape[0], dtype=np.float64)
         return xs_sum
 
-    def _calc_indexes(self):
+    def _calc_indexes(self, with_betas):
         qq = self.wave.qq
         print('\n')
         alphas = self._calc_indexes_j(0, qq[0:1])
         print('# alphas =', alphas)
+        if not with_betas:
+            return
         for j in range(self.delta_j):
             betas = self._calc_indexes_j(j, qq[1:])
             print('# coeffs %d =' % j, betas)
+
+    def calc_indexes_j(self, j):
+        betas = self._calc_indexes_j(j, self.wave.qq[1:])
+        print('# beta coeffs %d =' % j, betas)
 
     def _calc_indexes_j(self, j, qxs):
         jj = self._jj(j)
@@ -209,7 +241,8 @@ class WParams(object):
 
     def omega(self, n):
         "Bias correction for k-th nearest neighbours sum for sample size n"
-        return gamma(self.k) / gamma(self.k + 0.5) / math.sqrt(n)
+        ## return gamma(self.k) / gamma(self.k + 0.5) / math.sqrt(n)
+        return math.sqrt(n - 1) * gamma(self.k) / gamma(self.k + 0.5) / n
 
     def calculate_nearest_balls(self, xs):
         "Calculate and store (k+1)-th nearest balls"
@@ -256,9 +289,27 @@ class WaveletDensityEstimator(object):
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
         self.params = WParams(self)
+        self.params.pre_coeffs(xs)
         self.params.calc_coeffs(xs)
         self._xs = xs
         self._params = self.params
+
+    def to_dict(self, fname):
+        data = dict(
+            wave=self.wave.to_dict(),
+            k=self.k,
+            jj0=self.jj0.tolist(),
+            delta_j=self.delta_j,
+            params=self.params.as_dict(),
+            _xs=self._xs.tolist(),
+            minx=self.minx.tolist(),
+            maxx=self.maxx.tolist(),
+            name=self.name,
+        )
+        return data
+
+    def from_dict(self):
+        pass
 
     def fit(self, xs):
         "Fit estimator to data. xs is a numpy array of dimension n x d, n = samples, d = dimensions"
@@ -266,9 +317,35 @@ class WaveletDensityEstimator(object):
         t0 = datetime.now()
         self._fitinit(xs)
         self.pdf = self.params.calc_pdf(self.params.coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d FIT #params=%d' % (self.wave.name, self.params.n, str(self.jj0),
-                                                               self.delta_j, len(self.params.coeffs))
+        self.name = '%s N=%d j0=%s Dj=%d k=%d #par=%d Full' % (self.wave.name, self.params.n, str(self.jj0),
+                                                               self.delta_j, self.k, len(self.params.coeffs))
         print('secs=', (datetime.now() - t0).total_seconds())
+
+    def _iterinit(self, xs):
+        if self._xs is xs:
+            # objec ref comparisson, do not recalc if already calculated
+            self.params = self._params
+            return
+        if self.wave.dim != xs.shape[1]:
+            raise ValueError("Expected data with %d dimensions, got %d" % (self.wave.dim, xs.shape[1]))
+        self.minx = np.amin(xs, axis=0)
+        self.maxx = np.amax(xs, axis=0)
+        self.params = WParams(self, with_betas=False)
+        self.params.pre_coeffs(xs)
+        self.params.calc_coeffs(xs)
+        self._xs = xs
+        self._params = self.params
+
+    def iterfit(self, xs):
+        print('Iter estimator: Normed, iterated')
+        t0 = datetime.now()
+        self._iterinit(xs)
+        coeffs = self.calc_iter_pdf(xs)
+        self.pdf = self.params.calc_pdf(coeffs)
+        self.name = '%s N=%d j0=%s Dj=%d k=%d #par=%d Iter' % (self.wave.name, self.params.n, str(self.jj0),
+                                                               self.delta_j, self.k, len(coeffs))
+        print('secs=', (datetime.now() - t0).total_seconds())
+
 
     def cvfit(self, xs, loss, ordering, is_single=True):
         "options = dict(loss=?, ordering=?)"
@@ -281,23 +358,30 @@ class WaveletDensityEstimator(object):
         self._fitinit(xs)
         coeffs = self.calc_pdf_cv(xs, loss, ordering, is_single)
         self.pdf = self.params.calc_pdf(coeffs)
-        self.name = '%s, n=%d, j0=%s, Dj=%d #params=%d Lss=%s Ord=%s' % (self.wave.name, self.params.n,
-                                                                             str(self.jj0), self.delta_j, len(coeffs),
-                                                                             loss[:3], ordering[:3])
+        self.name = '%s N=%d j0=%s Dj=%d k=%d #par=%d Lss=%s Thr=%s M=%s' % (self.wave.name, self.params.n,
+                                                                        str(self.jj0), self.delta_j, self.k, len(coeffs),
+                                                                        loss[:3], ordering[:4], str(not is_single)[0])
         print('secs=', (datetime.now() - t0).total_seconds())
 
     Q_ORD = 'QTerm'
-    AQ_ORD = 'AbsQTerm'
-    N_ORD = 'QTermHNorm'
-    AN_ORD = 'AbsQTermHNorm'
-    T_ORD = 'Traditional'
-    T2_ORD = 'TradBio'
-    # these _orderings_ reflect different threshold strategies
+    AQ_ORD = 'AQTerm'
+    Q2_ORD = 'Q2Term'
+    AQ2_ORD = 'AQ2Term'
+    I_ORD = 'QImpr'
+    AI_ORD = 'AQImpr'
+    T_ORD = 'Trad'
+    T2_ORD = 'TrBio'
+    RT_ORD = "RefTao"
+    # these _orderings_ reflect different threshold strategies;
+    # note we use the negative values, so it is descending order
     ORDERINGS = OrderedDict([
         (Q_ORD, (lambda coeff, coeff2, contrib, j : contrib)),
         (AQ_ORD, (lambda coeff, coeff2, contrib, j : math.fabs(contrib))),
-        (N_ORD, (lambda coeff, coeff2, contrib, j : contrib - 0.5 * coeff2)),
-        (AN_ORD, (lambda coeff, coeff2, contrib, j : math.fabs(contrib - 0.5 * coeff2))),
+        # what is this?! it seems to work to restrict noise from higher levels!
+        (Q2_ORD, (lambda coeff, coeff2, contrib, j : coeff2 + (contrib - coeff2))),
+        (AQ2_ORD, (lambda coeff, coeff2, contrib, j: math.fabs(coeff2 + (contrib - coeff2)))),
+        (I_ORD, (lambda coeff, coeff2, contrib, j : (contrib - 0.5 * coeff2))),
+        (AI_ORD, (lambda coeff, coeff2, contrib, j : math.fabs(contrib - 0.5 * coeff2))),
         (T_ORD, (lambda coeff, coeff2, contrib, j : math.fabs(coeff) / math.sqrt(j + 1))),
         (T2_ORD, (lambda coeff, coeff2, contrib, j : coeff2 / (j + 1))),
     ])
@@ -313,10 +397,328 @@ class WaveletDensityEstimator(object):
             for ordering in WaveletDensityEstimator.ORDERINGS.keys():
                 yield loss, ordering, is_single
 
+    def calc_iter_pdf(self, xs):
+        coeffs = {}
+        alpha_contribution = 0.0
+        alpha_norm = 0.0
+        # initially, just alphas
+        for key, tup in self.params.coeffs.items():
+            coeff, coeff_b, num = tup
+            if coeff == 0.0:
+                continue
+            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
+            coeff_contribution = term1 - term2 + term3
+            coeffs[key] = tup
+            alpha_norm += coeff2
+            alpha_contribution += coeff_contribution
+        self.delta_j = 1
+        loss = 1 - alpha_contribution / math.sqrt(alpha_norm)
+        contribution = alpha_contribution
+        norm2 = alpha_norm
+        all_possible = 0
+        all_rejected = 0
+        while True:
+            lvl_j = self.delta_j - 1
+            print('\n** Explore j =', lvl_j, 'loss =', loss)
+            self.params.calc_indexes_j(lvl_j)
+            self.params.calc_coeffs(xs)
+            contributions = []
+            for key, tup in self.params.coeffs.items():
+                coeff, coeff_b, num = tup
+                if coeff == 0.0:
+                    continue
+                j, qx, zs, jpow2 = key
+                is_alpha = j == 0 and all([qi == 0 for qi in qx])
+                if is_alpha or j < lvl_j:
+                    continue
+                # TODO - add only of level before has X% coefficients
+                term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
+                coeff_contribution = term1 - term2 + term3
+                coeff_norm2 = coeff2
+                contributions.append((key, coeff_contribution, coeff_norm2, tup))
+            print('done contribution factors #', len(contributions))
+            all_possible += len(contributions)
+            improved = False
+            while True:
+                if len(contributions) == 0:
+                    print('Beta level', lvl_j, 'exhausted')
+                    break
+                # 1 - (M + a)/sqrt(N + b) < 1 - M/sqrt(N)
+                # (M + a)/sqrt(N + b) - M/sqrt(N) > 0
+                vals = np.array([
+                    (contribution + coeff_contribution)/math.sqrt(norm2 + coeff_norm2) - contribution/math.sqrt(norm2)
+                    for _, coeff_contribution, coeff_norm2, _ in contributions
+                ])
+                ix = np.argmax(vals)
+                new_loss = 1 - (contribution + contributions[ix][1])/math.sqrt(norm2 + contributions[ix][2])
+                # print(loss,'--',ix, new_loss)
+                if 0 < new_loss < loss:
+                    ## print(ix, new_loss, ';', contributions[ix][1], contributions[ix][2], contributions[ix][1]/math.sqrt(contributions[ix][2]))
+                    improved = True
+                    contribution += contributions[ix][1]
+                    norm2 += contributions[ix][2]
+                    coeffs[contributions[ix][0]] = contributions[ix][3]
+                    # print('improvement', new_loss, '<', loss, ' at ', ix, ' for contributions', contributions[ix])
+                    loss = new_loss
+                    del contributions[ix]
+                else:
+                    all_rejected += len(contributions)
+                    print('Beta level', lvl_j, 'finished. Coeffs left', len(contributions), ' f=', all_rejected / all_possible)
+                    break
+            if not improved or all_rejected / all_possible > 0.3:
+                break
+            self.delta_j += 1
+        print('Iterative: params =', len(coeffs))
+        return coeffs
+
     def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
         if self.delta_j == 0:
             raise ValueError('Cannot do CV over alpha only ... yet')
+        if ordering == WaveletDensityEstimator.RT_ORD:
+            return self.calc_pdf_ref_tao(xs, loss)
         coeffs = {}
+        alpha_contributions = []
+        contributions = []
+        alpha_contribution = 0.0
+        alpha_norm = 0.0
+        fun = WaveletDensityEstimator.ORDERINGS[ordering]
+        for key, tup in self.params.coeffs.items():
+            coeff, coeff_b, num = tup
+            if coeff == 0.0:
+                continue
+            j, qx, zs, jpow2 = key
+            is_alpha = j == 0 and all([qi == 0 for qi in qx])
+            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
+            coeff_contribution = term1 - term2 + term3
+            if is_alpha:
+                if True: #coeff_contribution > 0:
+                    coeffs[key] = tup
+                    alpha_norm += coeff2
+                    alpha_contribution += coeff_contribution
+                    # TODO: alpha could be filtered for Q > 0 (!!)
+                    # threshold = fun(coeff, coeff2, coeff_contribution, j)
+                    # alpha_contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
+                continue
+
+            # threshold is the order-by number; here the options
+            threshold = fun(coeff, coeff2, coeff_contribution, j)
+            contributions.append(((key, tup), threshold, (term1, term2, term3, coeff2)))
+
+        print('alphas =', len(coeffs))
+
+        if single_threshold:
+            self.threshold = self.single_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
+            for values in self.threshold.sorted_contrib[:self.threshold.pos_k + 1]:
+                key, tup = values[0]
+                coeffs[key] = tup
+            return coeffs
+
+        threshold = self.single_threshold(coeffs, loss, contributions, alpha_norm, alpha_contribution)
+
+        threshold_c = threshold.threshold
+        self.thresholds = self.multi_threshold(coeffs, loss, threshold.sorted_contrib, alpha_norm, alpha_contribution,
+                                               threshold_c, threshold.th_j, threshold.target_val)
+        for a_threshold in self.thresholds:
+            for values in a_threshold.sorted_contrib[:a_threshold.pos_k + 1]:
+                key, tup = values[0]
+                coeffs[key] = tup
+        print('Multi-threshold: params =', len(coeffs))
+        return coeffs
+
+    class StateJ:
+        def __init__(self, j, contribs, threshold_c):
+            self.j = j
+            self.contribs = contribs
+            self.len_contribs = len(contribs)
+            self.curr_k = np.argmin(np.array([v[1] for v in self.contribs]) >= threshold_c) - 1
+            batta_sum = np.array([(term1 - term2 + term3) for _, _, (term1, term2, term3, _) in self.contribs])
+            self.batta_sums = np.cumsum(batta_sum)
+            norm_sum = np.array([coeff2 for _, _, (_, _, _, coeff2) in self.contribs])
+            self.norm_sums = np.cumsum(norm_sum)
+            self.dk = 0
+
+        def dk_ok(self):
+            new_k = self.curr_k + self.dk
+            return 0 <= new_k < self.len_contribs
+
+        def set_new(self):
+            self.curr_k += self.dk
+
+        def as_result(self, target_val):
+            # 'threshold', 'pos_k', 'target_val', 'values', 'sorted_kept', 'msg'
+            return ThresholdResult(
+                self.contribs[self.curr_k][1],
+                self.curr_k,
+                target_val,
+                None,
+                self.contribs,
+                self.j,
+                'Multi'
+            )
+
+        def batta_sum(self):
+            if not self.dk_ok():
+                return 0.0
+            return self.batta_sums[self.curr_k + self.dk]
+
+        def norm_sum(self):
+            if not self.dk_ok():
+                return 0.0
+            return self.norm_sums[self.curr_k + self.dk]
+
+
+    class StateWDE:
+        def __init__(self, loss, alpha_norm, alpha_contrib):
+            self.levels = []
+            self.alpha_norm = alpha_norm
+            self.alpha_contrib = alpha_contrib
+            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
+                self.lossfn = lambda batta_sum, norm_sum : 1 - batta_sum
+            elif loss == WaveletDensityEstimator.NORMED_LOSS:
+                self.lossfn = lambda batta_sum, norm_sum : 1 - batta_sum / math.sqrt(norm_sum)
+            elif loss == WaveletDensityEstimator.NEW_LOSS:
+                self.lossfn = lambda batta_sum, norm_sum :  0.5 + 0.5 * norm_sum - batta_sum
+
+        def append(self, state_j):
+            self.levels.append(state_j)
+
+        def eval_target(self):
+            batta_sum = self.alpha_contrib
+            norm_sum = self.alpha_norm
+            for state_j in self.levels:
+                batta_sum += state_j.batta_sum()
+                norm_sum += state_j.norm_sum()
+            return self.lossfn(batta_sum, norm_sum)
+
+        def curr_ks(self):
+            return [state_j.curr_k for state_j in self.levels]
+
+        def curr_cs(self):
+            return [state_j.contribs[state_j.curr_k][1] for state_j in self.levels]
+
+
+    def multi_threshold(self, coeffs, loss, sorted_contributions, alpha_norm, alpha_contribution, threshold_c, th_j, loss_val):
+        # determine current posk for each level
+        # contributions = list of (key, tup), threshold, (term1, term2, term3, coeff2)
+        # key is j, qx, zs, jpow2
+        state_wde = WaveletDensityEstimator.StateWDE(loss, alpha_norm, alpha_contribution)
+        for j in range(self.delta_j):
+            contrib_j = list(filter(lambda tup: tup[0][0][0] == j, sorted_contributions))
+            contrib_j = sorted(contrib_j, key=lambda values: -values[1])
+            if j < th_j:
+                threshold_c = float('-inf')
+            elif j == th_j:
+                threshold_c = threshold_c
+            else:
+                threshold_c = float('inf')
+            state_j = WaveletDensityEstimator.StateJ(j, contrib_j, threshold_c)
+            state_wde.append(state_j)
+
+        ok = True
+        current_val = state_wde.eval_target()
+        trace = [(state_wde.curr_ks(), current_val, state_wde.curr_cs())]
+        print('> done setting up state - multi')
+        print('> current_val, %f (orig %f)' % (current_val, loss_val))
+        print('> ks ', state_wde.curr_ks())
+        print('> thresholds', state_wde.curr_cs())
+
+        # TODO, there is a minor tiny difference between this current_val and the result from single threshold (?!)
+
+        while ok:
+            ok = False
+            best_dk_js = None
+            # print(trace[-1])
+
+            for dk_js in itt.product([-1,0,1], repeat=self.delta_j):
+                if all([dk_j == 0 for dk_j in dk_js]):
+                    # omit if all pos_k are going to be the same
+                    continue
+                # set dk for all levels
+                for j in range(self.delta_j):
+                    state_wde.levels[j].dk = dk_js[j]
+                if not all([state_wde.levels[j].dk_ok() for j in range(self.delta_j)]):
+                    # omit if we go beyond any of the levels
+                    continue
+                # recalc sums for new positions
+                new_val = state_wde.eval_target()
+                #
+                # Intermediate values on the grid
+                #  print(dk_js, '>', new_val)
+                #
+                if new_val < current_val:
+                    ok = True
+                    current_val = new_val
+                    best_dk_js = dk_js
+            # if we managed to improve, adjust current values for k, qsum and norm for each level
+            # for next iteration
+            if ok:
+                print('>> improved @', best_dk_js, current_val)
+                for j in range(self.delta_j):
+                    state_wde.levels[j].dk = best_dk_js[j]
+                    state_wde.levels[j].set_new()
+                trace.append((state_wde.curr_ks(), current_val, state_wde.curr_cs()))
+        thresholds = [state_j.as_result(current_val) for state_j in state_wde.levels]
+        return thresholds
+
+    def single_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution):
+        vals, sorted_cont = self.calc_c_function(contributions, alpha_norm, alpha_contribution, loss, len(coeffs))
+        if len(vals) == 0:
+            return ThresholdResult(0, -1, 1.0, np.array([]), np.array([]), -1, 'No betas')
+        # import code
+        # code.interact('** %s' % ','.join(locals().keys()), local=locals())
+        k = self.pos_k_min(vals, self.params.n - len(coeffs))
+        threshold, target_val, th_j = vals[k,:]
+        print('single threshold', len(sorted_cont), '=> (at %d)' % k, 'C =', threshold, 'J =', th_j, 'V =',target_val, '(%s)' % loss)
+        return ThresholdResult(threshold, k, target_val, vals, sorted_cont, th_j, 'All')
+
+    def calc_c_function(self, contributions, curr_norm, curr_contribution, loss, alpha_nump):
+        ## contributions = sorted(contributions, key=lambda values: -values[1]) ## <-- original
+        contributions = sorted(contributions, key=lambda values: (values[0][0][0], -values[1])) ## j first
+        print('curr_norm, curr_contribution =', curr_norm, curr_contribution)
+
+        batta_sum = curr_contribution
+        norm_sum = curr_norm
+        vals = []
+        for nump, values in enumerate(contributions):
+            j = values[0][0][0]
+            threshold = values[1]
+            term1, term2, term3, coeff2 = values[2]
+            norm_sum += coeff2
+            coeff_contribution = term1 - term2 + term3
+            batta_sum += coeff_contribution
+            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
+                target = 1 - batta_sum
+            elif loss == WaveletDensityEstimator.NORMED_LOSS:
+                target = 1 - batta_sum / math.sqrt(norm_sum)
+            elif loss == WaveletDensityEstimator.NEW_LOSS:
+                target = 0.5 + 0.5 * norm_sum - batta_sum
+            else:
+                raise ValueError('Unknown loss=%s' % loss)
+
+            # MDL correction (?) - how do u justify this?
+            ## BELOW - not justified, completly "heuristic" - one could try to see if related to
+            ## 2017, Peter, Rangarajan, Moyou - The Geometry of Orthogonal-Series, Square-Root Density Estimators,
+            ##       Applications in Computer Vision and Model Selection.pdf
+
+            # pp = alpha_nump + nump
+            # target += math.log(math.log(pp) + pp / 2 * math.log(math.pi)
+            #                    - pp / 2 * (math.log(2 * math.pi) - math.log(self.params.n))) / math.log(self.params.n)
+
+            ## Another alternative is to penalise based on J (we have math.sqrt(j) in a threshold calculation
+            ## but, again, what would be the justification for that ... variance considerations? where?
+
+            vals.append((threshold, target, j))
+        return np.array(vals), contributions
+
+    class StateTaoJ:
+        pass
+
+    def calc_pdf_ref_tao(self, xs, loss, ordering):
+        coeffs = {}
+        for j in range(self.delta_j):
+            # TODO - think of something that can be done as refinement
+            # 1. refinement equation (new alphas) vs their variances
+            pass
         alpha_contributions = []
         contributions = []
         alpha_contribution = 0.0
@@ -365,162 +767,6 @@ class WaveletDensityEstimator(object):
         print('Multi-threshold: params =', len(coeffs))
         return coeffs
 
-    class StateJ:
-        def __init__(self, j, contribs, threshold_c):
-            self.j = j
-            self.contribs = contribs
-            self.len_contribs = len(contribs)
-            self.curr_k = np.argmin(np.array([v[1] for v in self.contribs]) >= threshold_c) - 1
-            batta_sum = np.array([(term1 - term2 + term3) for _, _, (term1, term2, term3, _) in self.contribs])
-            self.batta_sums = np.cumsum(batta_sum)
-            norm_sum = np.array([coeff2 for _, _, (_, _, _, coeff2) in self.contribs])
-            self.norm_sums = np.cumsum(norm_sum)
-            self.dk = 0
-
-        def dk_ok(self):
-            new_k = self.curr_k + self.dk
-            return 0 <= new_k < self.len_contribs
-
-        def set_new(self):
-            self.curr_k += self.dk
-
-        def as_result(self, target_val):
-            # 'threshold', 'pos_k', 'target_val', 'values', 'sorted_kept', 'msg'
-            return ThresholdResult(
-                self.contribs[self.curr_k][1],
-                self.curr_k,
-                target_val,
-                None,
-                self.contribs,
-                'Multi dj=%d' % self.j
-            )
-
-        def batta_sum(self):
-            if not self.dk_ok():
-                return 0.0
-            return self.batta_sums[self.curr_k + self.dk]
-
-        def norm_sum(self):
-            if not self.dk_ok():
-                return 0.0
-            return self.norm_sums[self.curr_k + self.dk]
-
-
-    class StateWDE:
-        def __init__(self, loss, alpha_norm, alpha_contrib):
-            self.levels = []
-            self.alpha_norm = alpha_norm
-            self.alpha_contrib = alpha_contrib
-            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
-                self.lossfn = lambda batta_sum, norm_sum : 1 - batta_sum
-            elif loss == WaveletDensityEstimator.NORMED_LOSS:
-                self.lossfn = lambda batta_sum, norm_sum : 1 - batta_sum / norm_sum
-            elif loss == WaveletDensityEstimator.NEW_LOSS:
-                self.lossfn = lambda batta_sum, norm_sum :  0.5 + 0.5 * norm_sum - batta_sum
-
-        def append(self, state_j):
-            self.levels.append(state_j)
-
-        def eval_target(self):
-            batta_sum = self.alpha_contrib
-            norm_sum = self.alpha_norm
-            for state_j in self.levels:
-                batta_sum += state_j.batta_sum()
-                norm_sum += state_j.norm_sum()
-            return self.lossfn(batta_sum, norm_sum)
-
-        def curr_ks(self):
-            return [state_j.curr_k for state_j in self.levels]
-
-        def curr_cs(self):
-            return [state_j.contribs[state_j.curr_k][1] for state_j in self.levels]
-
-
-    def multi_threshold(self, coeffs, loss, sorted_contributions, alpha_norm, alpha_contribution, threshold_c, loss_val):
-        # determine current posk for each level
-        # contributions = list of (key, tup), threshold, (term1, term2, term3, coeff2)
-        # key is j, qx, zs, jpow2
-        state_wde = WaveletDensityEstimator.StateWDE(loss, alpha_norm, alpha_contribution)
-        for j in range(self.delta_j):
-            contrib_j = list(filter(lambda tup: tup[0][0][0] == j, sorted_contributions))
-            state_j = WaveletDensityEstimator.StateJ(j, contrib_j, threshold_c)
-            state_wde.append(state_j)
-
-        ok = True
-        current_val = state_wde.eval_target()
-        trace = [(state_wde.curr_ks(), current_val, state_wde.curr_cs())]
-        print('> done setting up state - multi', current_val, '(orig %f)' % loss_val)
-
-        # TODO, there is a minor tiny difference between this current_val and the result from single threshold (?!)
-
-        while ok:
-            ok = False
-            best_dk_js = None
-            # print(trace[-1])
-
-            for dk_js in itt.product([-1,0,1], repeat=self.delta_j):
-                if all([dk_j == 0 for dk_j in dk_js]):
-                    # omit if all pos_k are going to be the same
-                    continue
-                # set dk for all levels
-                for j in range(self.delta_j):
-                    state_wde.levels[j].dk = dk_js[j]
-                if not all([state_wde.levels[j].dk_ok() for j in range(self.delta_j)]):
-                    # omit if we go beyond any of the levels
-                    continue
-                # recalc sums for new positions
-                new_val = state_wde.eval_target()
-                #
-                # Intermediate values on the grid
-                #  print(dk_js, '>', new_val)
-                #
-                if new_val < current_val:
-                    ok = True
-                    current_val = new_val
-                    best_dk_js = dk_js
-            # if we managed to improve, adjust current values for k, qsum and norm for each level
-            # for next iteration
-            if ok:
-                print('>> improved @', best_dk_js, current_val)
-                for j in range(self.delta_j):
-                    state_wde.levels[j].dk = best_dk_js[j]
-                    state_wde.levels[j].set_new()
-                trace.append((state_wde.curr_ks(), current_val, state_wde.curr_cs()))
-        thresholds = [state_j.as_result(current_val) for state_j in state_wde.levels]
-        return thresholds
-
-    def single_threshold(self, coeffs, loss, contributions, alpha_norm, alpha_contribution):
-        vals, sorted_cont = self.calc_c_function(contributions, alpha_norm, alpha_contribution, loss)
-        if len(vals) == 0:
-            return ThresholdResult(0, -1, 1.0, np.array([]), np.array([]), 'No betas')
-        k = self.pos_k_min(vals, self.params.n - len(coeffs))
-        threshold, target_val = vals[k,:]
-        print('single threshold', len(sorted_cont), '=> (at %d)' % k, 'C =', threshold, 'V =',target_val, '(%s)' % loss)
-        return ThresholdResult(threshold, k, target_val, vals, sorted_cont, 'All')
-
-    def calc_c_function(self, contributions, curr_norm, curr_contribution, loss):
-        contributions = sorted(contributions, key=lambda values: -values[1])
-        print('curr_norm, curr_contribution =', curr_norm, curr_contribution)
-
-        batta_sum = curr_contribution
-        norm_sum = curr_norm
-        vals = []
-        for values in contributions:
-            threshold = values[1]
-            term1, term2, term3, coeff2 = values[2]
-            norm_sum += coeff2
-            coeff_contribution = term1 - term2 + term3
-            batta_sum += coeff_contribution
-            if loss == WaveletDensityEstimator.ORIGINAL_LOSS:
-                target = 1 - batta_sum
-            elif loss == WaveletDensityEstimator.NORMED_LOSS:
-                target = 1 - batta_sum / norm_sum
-            elif loss == WaveletDensityEstimator.NEW_LOSS:
-                target = 0.5 + 0.5 * norm_sum - batta_sum
-            else:
-                raise ValueError('Unknown loss=%s' % loss)
-            vals.append((threshold, target))
-        return np.array(vals), contributions
 
     def pos_k_min(self, vals, max_params):
         return min(np.argmin(vals[:, 1]), max_params, vals.shape[0]-1)

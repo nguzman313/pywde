@@ -59,13 +59,14 @@ def test_wparam_calc_indexes_zz(mock_wde_1_with_data):
 def test_balls(mock_wde_1_with_data):
     wde, data = mock_wde_1_with_data
     wparams = WParams(wde)
-    wparams.calc_coeffs(data)
+    wparams.pre_coeffs(data)
     assert_array_almost_equal(np.array([0.531736,0.396333,0.396333]), wparams.xs_balls)
 
 
 def test_betas(mock_wde_1_with_data):
     wde, data = mock_wde_1_with_data
     wparams = WParams(wde)
+    wparams.pre_coeffs(data)
     wparams.calc_coeffs(data)
     coeff_d, coeff_b, num = wparams.coeffs[(0, (1,1), (0,0), (1,2))]
     assert_almost_equal(0.018246, coeff_d, 3) # TODO check and coeff_b
@@ -78,5 +79,6 @@ def test_betas(mock_wde_1_with_data):
 def _test_wparam_calc_coeffs_no_cv(mock_wde_with_data):
     wde, data = mock_wde_with_data
     wparams = WParams(wde)
+    wparams.pre_coeffs(data)
     wparams.calc_coeffs(data)
     assert len(wparams.coeffs.keys()) == 0
