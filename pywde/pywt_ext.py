@@ -23,7 +23,7 @@ def calc_fun(support, values):
 
 _RE1 = re.compile('(db|sym)([0-9]+)')
 _RE = re.compile('(rbio|bior)([0-9]+)[.]([0-9]+)')
-_RESOLUTION_1D = 14
+_RESOLUTION_1D = 16
 
 def wave_support_info(pywt_wave):
     resp = {}
@@ -136,7 +136,7 @@ class Wavelet(pywt.Wavelet):
         if ix is None:
             ix = (0, 1, 0)
         q, s, z = ix
-        assert s <= 64
+        #assert s <= 64
         fun = self.funs[what][q]
         a, b = fun.support
         # a <= s x + z <= b
@@ -284,4 +284,7 @@ class WaveletTensorProduct(object):
             zs_max.append(zi_max)
         zs_min = np.array(zs_min)
         zs_max = np.array(zs_max)
+        # print('js', js)
+        # print('zs min', zs_min)
+        # print('zs max', zs_max)
         return zs_min, zs_max
