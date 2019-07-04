@@ -104,6 +104,7 @@ class WParams(object):
     def calc_coeffs(self, xs):
         norm = 0.0
         omega = self.omega(self.n)
+        remove = []
         for key in self.coeffs.keys():
             if self.coeffs[key] is not None:
                 continue
@@ -115,9 +116,49 @@ class WParams(object):
             coeff = (terms_d * self.xs_balls).sum() * omega
             coeff_b = (terms_b * self.xs_balls).sum() * omega
             #print('beta_{%s}' % str(key), '=', coeff)
+            if math.fabs(coeff) < 1.0e-7 and math.fabs(coeff_b) < 1.0e-7:
+                remove.append(key)
+                continue
             self.coeffs[key] = (coeff, coeff_b, num)
             norm += coeff * coeff_b
+        for key in remove:
+            del self.coeffs[key]
         print('calc_coeffs #', len(self.coeffs), norm)
+
+    def calc_coeffs_loo(self, xs, ix_loo):
+        norm = 0.0
+        omega = self.omega(self.n - 1)
+        remove = []
+        xs = np.delete(xs, ix_loo, axis=0)
+        balls = []
+        for i in range(self.xs_balls_inx.shape[0]):
+            if i == ix_loo:
+                continue
+            if self.xs_balls_inx[i, -2] == ix_loo:
+                balls.append(self.xs_balls2[i])
+            else:
+                balls.append(self.xs_balls[i])
+        balls = np.array(balls)
+        for key in self.coeffs.keys():
+            if self.coeffs[key] is not None:
+                continue
+            j, qx, zs, jpow2 = key
+            jpow2 = np.array(jpow2)
+            num = self.wave.supp_ix('dual', (qx, jpow2, zs))(xs).sum()
+            terms_d = self.wave.fun_ix('dual', (qx, jpow2, zs))(xs)
+            terms_b = self.wave.fun_ix('base', (qx, jpow2, zs))(xs)
+            coeff = (terms_d * balls).sum() * omega
+            coeff_b = (terms_b * balls).sum() * omega
+            #print('beta_{%s}' % str(key), '=', coeff)
+            if math.fabs(coeff) < 1.0e-7 and math.fabs(coeff_b) < 1.0e-7:
+                remove.append(key)
+                continue
+            self.coeffs[key] = (coeff, coeff_b, num)
+            norm += coeff * coeff_b
+        for key in remove:
+            del self.coeffs[key]
+        # print('calc_coeffs #', len(self.coeffs), norm)
+
 
     def calc_pdf(self, coeffs):
         def fun(coords):
@@ -138,10 +179,10 @@ class WParams(object):
         fun.nparams = len(coeffs)
         fun.to_dict = to_dict
         min_num = min([num for coeff, coeff_b, num in coeffs.values() if num > 0])
-        print('>> WDE PDF')
-        print('Num coeffs', len(coeffs))
-        print('Norm', fun.norm_const)
-        print('min num', min_num)
+        # print('>> WDE PDF')
+        # print('Num coeffs', len(coeffs))
+        # print('Norm', fun.norm_const)
+        # print('min num', min_num)
         return fun
 
     def gen_pdf(self, xs_sum, coeffs_items, coords):
@@ -206,10 +247,10 @@ class WParams(object):
             xs_sum = np.zeros(coords.shape[0], dtype=np.float64)
         return xs_sum
 
-    def _calc_indexes(self, with_betas):
+    def _calc_indexes(self, with_betas, cur_j=0):
         qq = self.wave.qq
         print('\n')
-        alphas = self._calc_indexes_j(0, qq[0:1])
+        alphas = self._calc_indexes_j(cur_j, qq[0:1])
         print('# alphas =', alphas)
         if not with_betas:
             return
@@ -219,11 +260,12 @@ class WParams(object):
 
     def calc_indexes_j(self, j):
         betas = self._calc_indexes_j(j, self.wave.qq[1:])
-        print('# beta coeffs %d =' % j, betas)
+        print("# calc'ed beta coeffs %d =" % j, betas)
 
     def _calc_indexes_j(self, j, qxs):
         jj = self._jj(j)
-        jpow2 = tuple(2 ** jj)
+        jpow2 = tuple(2.0 ** jj)
+        ## print('-->', jpow2)
         ncoeff = 0
         for qx in qxs:
             zs_min_d, zs_max_d = self.wave.z_range('dual', (qx, jpow2, None), self.minx, self.maxx)
@@ -231,13 +273,14 @@ class WParams(object):
             zs_min = np.min((zs_min_d, zs_min_b), axis=0)
             zs_max = np.max((zs_max_d, zs_max_b), axis=0)
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-                self.coeffs[(j, qx, zs, jpow2)] = None
-                ncoeff += 1
+                if (j, qx, zs, jpow2) not in self.coeffs:
+                    self.coeffs[(j, qx, zs, jpow2)] = None
+                    ncoeff += 1
         return ncoeff
 
     def sqrt_vunit(self):
         "Volume of unit hypersphere in d dimensions"
-        return (np.pi ** (self.wave.dim / 4.0)) / gamma(self.wave.dim / 2.0 + 1)
+        return (np.pi ** (self.wave.dim / 4.0)) / (gamma(self.wave.dim / 2.0 + 1) ** 0.5)
 
     def omega(self, n):
         "Bias correction for k-th nearest neighbours sum for sample size n"
@@ -246,13 +289,12 @@ class WParams(object):
 
     def calculate_nearest_balls(self, xs):
         "Calculate and store (k+1)-th nearest balls"
-        k = self.k + 1
         ix = -2
-        dist, inx = self.ball_tree.query(xs, k + 1)
-        k_near_radious = dist[:, ix:]
+        dist, inx = self.ball_tree.query(xs, self.k + 2)
+        k_near_radious = dist[:, -2:]
         xs_balls = np.power(k_near_radious, self.wave.dim / 2.0)
-        self.xs_balls = xs_balls[:, ix] * self.sqrt_vunit()
-        self.xs_balls2 = xs_balls[:, -1] * self.sqrt_vunit()
+        self.xs_balls = xs_balls[:, 0] * self.sqrt_vunit()
+        self.xs_balls2 = xs_balls[:, 1] * self.sqrt_vunit()
         self.xs_balls_inx = inx
 
     def _jj(self, j):
@@ -372,6 +414,7 @@ class WaveletDensityEstimator(object):
     T_ORD = 'Trad'
     T2_ORD = 'TrBio'
     RT_ORD = "RefTao"
+    RTA_ORD = "RefAllTao"
     # these _orderings_ reflect different threshold strategies;
     # note we use the negative values, so it is descending order
     ORDERINGS = OrderedDict([
@@ -397,30 +440,93 @@ class WaveletDensityEstimator(object):
             for ordering in WaveletDensityEstimator.ORDERINGS.keys():
                 yield loss, ordering, is_single
 
+    def best_j(self, xs):
+        print("Let's rock Best J")
+        t0 = datetime.now()
+        if self.wave.dim != xs.shape[1]:
+            raise ValueError("Expected data with %d dimensions, got %d" % (self.wave.dim, xs.shape[1]))
+        self.minx = np.amin(xs, axis=0)
+        self.maxx = np.amax(xs, axis=0)
+        self.params = WParams(self, with_betas=False)
+        # self.params.pre_coeffs but w/ xtest
+        # self.params.pre_coeffs(xs_test), kinda
+        self.params.n = xs.shape[0]
+        self.params.ball_tree = BallTree(xs)
+        self.params.calculate_nearest_balls(xs)
+        balls = self.params.xs_balls
+        omega = self.params.omega(self.params.n)
+        # self.params_pre_coeffs(xs)
+        self._xs = xs
+        self._params = self.params
+        coeffs = {}
+        alpha_contribution = 0.0
+        alpha_norm = 0.0
+        # initially, just alphas
+        ini_j = 0
+        while True:
+            vals = []
+            self.params.coeffs = {}
+            self.params._calc_indexes_j(ini_j, self.params.wave.qq[0:1])
+            print('J', ini_j)
+            for ix, x in enumerate(xs):
+                # this is inefficient according to draft; uses direct logic
+                self.params.calc_coeffs_loo(xs, ix)
+                pdf = self.params.calc_pdf(self.params.coeffs)
+                b_hat_x = np.sqrt(pdf(np.array([x])))
+                print(x, '=>', b_hat_x)
+                vals.append(b_hat_x[0])
+            b_hat = omega * (np.array(vals) * balls).sum()
+            print('LEVEL => [[', ini_j, ']], b_hat =', b_hat, '# coeffs :', len(self.params.coeffs))
+            ini_j += 1
+            if ini_j > 8:
+                print('Done')
+                break
+        print('secs=', (datetime.now() - t0).total_seconds())
+
     def calc_iter_pdf(self, xs):
         coeffs = {}
         alpha_contribution = 0.0
         alpha_norm = 0.0
         # initially, just alphas
-        for key, tup in self.params.coeffs.items():
-            coeff, coeff_b, num = tup
-            if coeff == 0.0:
-                continue
-            term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
-            coeff_contribution = term1 - term2 + term3
-            coeffs[key] = tup
-            alpha_norm += coeff2
-            alpha_contribution += coeff_contribution
-        self.delta_j = 1
-        loss = 1 - alpha_contribution / math.sqrt(alpha_norm)
+        ini_j = 0
+        while True:
+            for key, tup in self.params.coeffs.items():
+                coeff, coeff_b, num = tup
+                if coeff == 0.0:
+                    continue
+                term1, term2, term3, coeff2 = self.params.calc_terms(key, coeff, coeff_b, xs)
+                coeff_contribution = term1 - term2 + term3
+                coeffs[key] = tup
+                alpha_norm += coeff2
+                alpha_contribution += coeff_contribution
+            loss = 1 - alpha_contribution / math.sqrt(alpha_norm)
+            print(ini_j, ', loss =', loss, ' loss^2 =', loss ** 2)
+            break
+            ini_j += 1
+            if ini_j > 8:
+                print('Done')
+                import sys
+                sys.exit()
+            self.params.coeffs = {}
+            self.params._calc_indexes_j(ini_j, self.params.wave.qq[0:1])
+            self.params.calc_coeffs(xs)
+
+
+        print('Wish me luck!')
         contribution = alpha_contribution
         norm2 = alpha_norm
         all_possible = 0
         all_rejected = 0
+        samples_perc = 0.99
+        trace_v = []
+        thr = 0.5 / self.params.n
+        new_betas = 0
+        lvl_j = 0
+        max_lvl = 0
         while True:
-            lvl_j = self.delta_j - 1
-            print('\n** Explore j =', lvl_j, 'loss =', loss)
-            self.params.calc_indexes_j(lvl_j)
+            print('\n** Explore j =', lvl_j, 'loss =', loss, '#params =', len(coeffs))
+            for dj in range(self.delta_j):
+                self.params.calc_indexes_j(lvl_j + dj)
             self.params.calc_coeffs(xs)
             contributions = []
             for key, tup in self.params.coeffs.items():
@@ -439,9 +545,15 @@ class WaveletDensityEstimator(object):
             print('done contribution factors #', len(contributions))
             all_possible += len(contributions)
             improved = False
+            stop = False
             while True:
                 if len(contributions) == 0:
                     print('Beta level', lvl_j, 'exhausted')
+                    break
+                # stopping rule A: certain number for coeff per sample
+                if len(coeffs) >= self.params.n * samples_perc:
+                    print('Stopping because too many coefficients')
+                    stop = True
                     break
                 # 1 - (M + a)/sqrt(N + b) < 1 - M/sqrt(N)
                 # (M + a)/sqrt(N + b) - M/sqrt(N) > 0
@@ -451,24 +563,36 @@ class WaveletDensityEstimator(object):
                 ])
                 ix = np.argmax(vals)
                 new_loss = 1 - (contribution + contributions[ix][1])/math.sqrt(norm2 + contributions[ix][2])
-                # print(loss,'--',ix, new_loss)
-                if 0 < new_loss < loss:
-                    ## print(ix, new_loss, ';', contributions[ix][1], contributions[ix][2], contributions[ix][1]/math.sqrt(contributions[ix][2]))
-                    improved = True
-                    contribution += contributions[ix][1]
-                    norm2 += contributions[ix][2]
-                    coeffs[contributions[ix][0]] = contributions[ix][3]
-                    # print('improvement', new_loss, '<', loss, ' at ', ix, ' for contributions', contributions[ix])
-                    loss = new_loss
-                    del contributions[ix]
-                else:
-                    all_rejected += len(contributions)
-                    print('Beta level', lvl_j, 'finished. Coeffs left', len(contributions), ' f=', all_rejected / all_possible)
-                    break
-            if not improved or all_rejected / all_possible > 0.3:
+                # print(loss,'--',ix, new_loss, loss-new_loss, contributions[ix][2], contributions[ix][2] - (loss - new_loss))
+                if 0 < new_loss < loss or new_betas < 2:
+                    # below based on inspection - but looking into MDL paper to see if it can be justified
+                    #if new_betas < 5: # or contributions[ix][2] - (loss - new_loss) > thr:
+                        ## print(ix, new_loss, ';', contributions[ix][1], contributions[ix][2], contributions[ix][1]/math.sqrt(contributions[ix][2]))
+                        improved = True
+                        new_betas += 1
+                        the_j = contributions[ix][0][0]
+                        max_lvl = max(max_lvl, the_j)
+                        trace_v.append((len(trace_v), new_loss, loss, contributions[ix][2], the_j))
+                        contribution += contributions[ix][1]
+                        norm2 += contributions[ix][2]
+                        coeffs[contributions[ix][0]] = contributions[ix][3]
+                        # print('improvement', new_loss, '<', loss, ' at ', ix, ' for contributions', contributions[ix])
+                        loss = new_loss
+                        del contributions[ix]
+                        continue
+                all_rejected += len(contributions)
+                print('Beta level', lvl_j, 'finished. Coeffs left', len(contributions), ' f=', all_rejected / all_possible)
                 break
-            self.delta_j += 1
-        print('Iterative: params =', len(coeffs))
+            # stopping rule B: rejecting too many across levels
+            if not improved or loss < thr / 2: # or all_rejected /  all_possible > 0.90: ## (!)
+                break
+            if stop:
+                break
+            lvl_j += 1
+        self.trace_v = np.array(trace_v)
+        # true delta_j
+        self.delta_j = max_lvl+1
+        print('Iterative: params =', len(coeffs), 'loss =', loss, 'delta-j (levels) =', self.delta_j)
         return coeffs
 
     def calc_pdf_cv(self, xs, loss, ordering, single_threshold=True):
@@ -621,6 +745,7 @@ class WaveletDensityEstimator(object):
         print('> current_val, %f (orig %f)' % (current_val, loss_val))
         print('> ks ', state_wde.curr_ks())
         print('> thresholds', state_wde.curr_cs())
+        ddx = 2
 
         # TODO, there is a minor tiny difference between this current_val and the result from single threshold (?!)
 
@@ -629,7 +754,7 @@ class WaveletDensityEstimator(object):
             best_dk_js = None
             # print(trace[-1])
 
-            for dk_js in itt.product([-1,0,1], repeat=self.delta_j):
+            for dk_js in itt.product([-ddx, 0, ddx], repeat=self.delta_j):
                 if all([dk_j == 0 for dk_j in dk_js]):
                     # omit if all pos_k are going to be the same
                     continue
@@ -654,7 +779,7 @@ class WaveletDensityEstimator(object):
             if ok:
                 print('>> improved @', best_dk_js, current_val)
                 for j in range(self.delta_j):
-                    state_wde.levels[j].dk = best_dk_js[j]
+                    state_wde.levels[j].dk = best_dk_js[j] / ddx
                     state_wde.levels[j].set_new()
                 trace.append((state_wde.curr_ks(), current_val, state_wde.curr_cs()))
         thresholds = [state_j.as_result(current_val) for state_j in state_wde.levels]
