@@ -23,18 +23,17 @@ class SPWDE(object):
         self.maxx = np.amax(xs, axis=0)
         for j in range(9):
             # calc B hat
-            jj = [j + j0 for j0 in self.j0s]
-            jpow2 = np.array([2 ** j for j in jj])
             tots = []
+            self.calc_funs(j, xs)
             for i, x in enumerate(xs):
-                alphas = self.calc_alphas_no_i(j, xs, i, balls_info)
+                alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun)
                 norm2 = 0.0
                 g_ring_x = 0.0
                 for zs in alphas:
-                    alpha_z = alphas[zs]
-                    g_ring_x += alpha_z * self.wave.fun_ix('base', ((0, 0), jpow2, zs))(np.array([x]))[0]
+                    alpha_zs = alphas[zs]
+                    g_ring_x += alpha_zs * self.base_fun[zs][i]
                     # todo: only orthogonal case
-                    norm2 += alpha_z * alpha_z
+                    norm2 += alpha_zs * alpha_zs
                 # q_ring_x ^ 2 / norm2 == f_at_x
                 if norm2 == 0.0:
                     if g_ring_x == 0.0:
@@ -47,18 +46,32 @@ class SPWDE(object):
             b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
             print(j, b_hat_j)
 
-    def calc_alphas_no_i(self, j, xs, i, balls_info):
-        qq = (0, 0) # alphas
+    def calc_funs(self, j, xs):
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
+
+        qq = (0, 0)  # alphas
+        funs = {}
+        for what in ['dual', 'base']:
+            zs_min, zs_max = self.wave.z_range(what, (qq, jj, None), self.minx, self.maxx)
+            funs[what] = {}
+            for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
+                funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))(xs)
+        self.base_fun = funs['base']
+        self.dual_fun = funs['dual']
+
+
+    def calc_alphas_no_i(self, j, xs, i, balls_info, dual_fun):
+        qq = (0, 0) # alphas
+        jj = [j + j0 for j0 in self.j0s]
         zs_min, zs_max = self.wave.z_range('dual', (qq, jj, None), self.minx, self.maxx)
         omega_no_i = calc_omega(xs.shape[0] - 1, self.k)
         resp = {}
+        balls = balls_no_i(balls_info, i)
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-            vs = np.delete(self.wave.fun_ix('dual', (qq, jpow2, zs))(xs), i)
-            balls = balls_no_i(balls_info, i)
-            v = omega_no_i * (vs * balls).sum()
-            resp[zs] = v
+            # below, we remove factor for i from sum << this has the most impact in performance
+            alpha_zs = omega_no_i * ((dual_fun[zs] * balls).sum() - dual_fun[zs][i] * balls[i])
+            resp[zs] = alpha_zs
         return resp
 
 
@@ -66,9 +79,7 @@ def balls_no_i(balls_info, i):
     n = balls_info.nn_indexes.shape[0]
     resp = []
     for i_prim in range(n):
-        if i_prim == i:
-            continue
-        # todo: this search performed multiple times, can be optimised
+        # note index i is removed at callers site
         if i in balls_info.nn_indexes[i_prim, :-1]:
             resp.append(balls_info.sqrt_vol_k_plus_1[i_prim])
         else:
