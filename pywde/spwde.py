@@ -85,6 +85,7 @@ BallsInfo = namedtuple('BallsInfo', ['sqrt_vol_k', 'sqrt_vol_k_plus_1', 'nn_inde
 
 
 def calc_sqrt_vs(xs, k):
+    "Returns BallsInfo object with sqrt of volumes of k-th balls and (k+1)-th balls"
     dim = xs.shape[1]
     ball_tree = BallTree(xs)
     # as xs is both data and query, xs's nearest neighbour would be xs itself, hence the k+2 below
@@ -97,5 +98,5 @@ def calc_sqrt_vs(xs, k):
 
 
 def sqrt_vunit(dim):
-    "Volume of unit hypersphere in d dimensions"
+    "Square root of Volume of unit hypersphere in d dimensions"
     return math.sqrt((np.pi ** (dim / 2)) / gamma(dim / 2 + 1))
