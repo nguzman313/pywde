@@ -17,7 +17,14 @@ class SPWDE(object):
         self.minx = None
         self.maxx = None
 
-    def best_j(self, xs):
+    MODE_UNNORMED = 'unnormed'
+    MODE_NORMED = 'normed'
+    MODE_DIFF = 'diff'
+    MODE_MDL = 'mdl'
+
+    def best_j(self, xs, mode):
+        if mode not in [self.MODE_NORMED, self.MODE_DIFF, self.MODE_MDL, self.MODE_UNNORMED]:
+            raise ValueError('Mode is wrong')
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
@@ -25,10 +32,17 @@ class SPWDE(object):
             # calc B hat
             tots = []
             self.calc_funs(j, xs)
+            if mode == self.MODE_DIFF:
+                alphas2 = self.calc_alphas(j, xs, balls_info, self.dual_fun)
+                alphas2 = np.array(list(alphas2.values()))
+                alphas2 = (alphas2 * alphas2).sum()
+            if mode == self.MODE_MDL:
+                alphas2 = self.calc_alphas(j, xs, balls_info, self.dual_fun)
+                num_alphas = len(alphas2)
             for i, x in enumerate(xs):
                 alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun)
-                norm2 = 0.0
                 g_ring_x = 0.0
+                norm2 = 0.0
                 for zs in alphas:
                     alpha_zs = alphas[zs]
                     g_ring_x += alpha_zs * self.base_fun[zs][i]
@@ -41,9 +55,23 @@ class SPWDE(object):
                     else:
                         raise RuntimeError('Got norms but no value')
                 else:
-                    tots.append(g_ring_x * g_ring_x /  norm2)
+                    if mode == self.MODE_NORMED or mode == self.MODE_MDL:
+                        tots.append(g_ring_x * g_ring_x / norm2)
+                    elif mode == self.MODE_DIFF:
+                        tots.append(g_ring_x * g_ring_x)
+                    else: # mode == UNNORMED
+                        tots.append(g_ring_x * g_ring_x)
             tots = np.array(tots)
-            b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
+            if mode == self.MODE_NORMED:
+                b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
+            elif mode == self.MODE_DIFF:
+                b_hat_j = 2 * calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - alphas2
+            elif mode == self.MODE_MDL:
+                print(j, calc_surface(num_alphas), calc_vol_theta(xs.shape[0], num_alphas))
+                mdl = calc_surface(num_alphas) /  calc_vol_theta(xs.shape[0], num_alphas)
+                b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - mdl
+            else: # model == MODE_UNNORMED
+                b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
             print(j, b_hat_j)
 
     def calc_funs(self, j, xs):
@@ -69,8 +97,21 @@ class SPWDE(object):
         resp = {}
         balls = balls_no_i(balls_info, i)
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-            # below, we remove factor for i from sum << this has the most impact in performance
+            # below, we remove factor for i from sum << this has the biggest impact in performance
             alpha_zs = omega_no_i * ((dual_fun[zs] * balls).sum() - dual_fun[zs][i] * balls[i])
+            resp[zs] = alpha_zs
+        return resp
+
+    def calc_alphas(self, j, xs, balls_info, dual_fun):
+        qq = (0, 0) # alphas
+        jj = [j + j0 for j0 in self.j0s]
+        zs_min, zs_max = self.wave.z_range('dual', (qq, jj, None), self.minx, self.maxx)
+        omega = calc_omega(xs.shape[0], self.k)
+        resp = {}
+        balls = balls_info.sqrt_vol_k
+        for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
+            # below, we remove factor for i from sum << this has the biggest impact in performance
+            alpha_zs = omega * (dual_fun[zs] * balls).sum()
             resp[zs] = alpha_zs
         return resp
 
@@ -90,6 +131,16 @@ def balls_no_i(balls_info, i):
 def calc_omega(n, k):
     "Bias correction for k-th nearest neighbours sum for sample size n"
     return math.sqrt(n - 1) * gamma(k) / gamma(k + 0.5) / n
+
+
+def calc_surface(num_params):
+    "Surface of n-sphere when considering num_params"
+    return 2 * (math.pi ** ((num_params + 1) / 2)) / gamma((num_params + 1) / 2)
+
+
+def calc_vol_theta(num_obvs, num_params):
+    "Volume of n-sphere when considering num_obvs observations and num_params coefficients"
+    return (2 * math.pi / num_obvs) ** (num_params / 2.0)
 
 
 BallsInfo = namedtuple('BallsInfo', ['sqrt_vol_k', 'sqrt_vol_k_plus_1', 'nn_indexes'])
