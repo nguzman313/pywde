@@ -4,6 +4,7 @@ import numpy as np
 from collections import namedtuple
 from scipy.special import gamma
 from sklearn.neighbors import BallTree
+from sklearn.model_selection import train_test_split
 
 from pywde.pywt_ext import WaveletTensorProduct
 from pywde.common import all_zs_tensor
@@ -24,14 +25,15 @@ class SPWDE(object):
         for j in range(9):
             # calc B hat
             tots = []
-            self.calc_funs(j, xs)
+            self.calc_funs(j)
+            self.calc_funs_at(xs)
             for i, x in enumerate(xs):
-                alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun)
+                alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun_at)
                 norm2 = 0.0
                 g_ring_x = 0.0
                 for zs in alphas:
                     alpha_zs = alphas[zs]
-                    g_ring_x += alpha_zs * self.base_fun[zs][i]
+                    g_ring_x += alpha_zs * self.base_fun_at[zs][i]
                     # todo: only orthogonal case
                     norm2 += alpha_zs * alpha_zs
                 # q_ring_x ^ 2 / norm2 == f_at_x
@@ -46,7 +48,37 @@ class SPWDE(object):
             b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
             print(j, b_hat_j)
 
-    def calc_funs(self, j, xs):
+    def best_j_cv(self, xss, frac):
+        xs_train, xs_test = train_test_split(xss, test_size=frac, random_state=345)
+        print('Train N', xs_train.shape[0])
+        print('Test N', xs_test.shape[0])
+        balls_train = calc_sqrt_vs(xs_train, self.k)
+        balls_test = calc_sqrt_vs(xs_test, self.k)
+        self.minx = np.amin(xs_train, axis=0)
+        self.maxx = np.amax(xs_train, axis=0)
+        for j in range(9):
+            # calc B hat
+            tots = []
+            self.calc_funs(j)
+            alphas = self.calc_alphas_train(j, xs_train, balls_train, self.dual_fun)
+            g_ring_x = np.zeros(xs_test.shape[0])
+            norm2 = 0.0
+            for zs in alphas:
+                alpha_zs = alphas[zs]
+                g_ring_x += alpha_zs * self.base_fun[zs](xs_test)
+                # todo: only orthogonal case
+                norm2 += alpha_zs * alpha_zs
+            # q_ring_x ^ 2 / norm2 == f_at_x
+            if norm2 == 0.0:
+                tots.append(np.zeros(xs_test.shape[0]))
+            else:
+                tots.append(g_ring_x * g_ring_x / norm2)
+            tots = np.array(tots)
+            tots = tots.sum(axis=0)
+            b_hat_j = calc_omega(xs_test.shape[0], self.k) * (np.sqrt(tots) * balls_test.sqrt_vol_k).sum()
+            print(j, b_hat_j)
+
+    def calc_funs(self, j):
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
 
@@ -56,10 +88,17 @@ class SPWDE(object):
             zs_min, zs_max = self.wave.z_range(what, (qq, jj, None), self.minx, self.maxx)
             funs[what] = {}
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-                funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))(xs)
+                funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))
         self.base_fun = funs['base']
         self.dual_fun = funs['dual']
 
+    def calc_funs_at(self, xs):
+        self.base_fun_at = {}
+        for zs, fun in self.base_fun.items():
+            self.base_fun_at[zs] = fun(xs)
+        self.dual_fun_at = {}
+        for zs, fun in self.dual_fun.items():
+            self.dual_fun_at[zs] = fun(xs)
 
     def calc_alphas_no_i(self, j, xs, i, balls_info, dual_fun):
         qq = (0, 0) # alphas
@@ -73,6 +112,19 @@ class SPWDE(object):
             alpha_zs = omega_no_i * ((dual_fun[zs] * balls).sum() - dual_fun[zs][i] * balls[i])
             resp[zs] = alpha_zs
         return resp
+
+    def calc_alphas_train(self, j, xs, balls_info, dual_fun):
+        qq = (0, 0) # alphas
+        jj = [j + j0 for j0 in self.j0s]
+        zs_min, zs_max = self.wave.z_range('dual', (qq, jj, None), self.minx, self.maxx)
+        omega_no_i = calc_omega(xs.shape[0], self.k)
+        resp = {}
+        balls = balls_info.sqrt_vol_k
+        for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
+            alpha_zs = omega_no_i * (dual_fun[zs](xs) * balls).sum()
+            resp[zs] = alpha_zs
+        return resp
+
 
 
 def balls_no_i(balls_info, i):
