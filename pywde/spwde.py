@@ -17,18 +17,16 @@ class SPWDE(object):
         self.minx = None
         self.maxx = None
 
-    MODE_UNNORMED = 'unnormed'
     MODE_NORMED = 'normed'
     MODE_DIFF = 'diff'
-    MODE_MDL = 'mdl'
 
     def best_j(self, xs, mode):
-        if mode not in [self.MODE_NORMED, self.MODE_DIFF, self.MODE_MDL, self.MODE_UNNORMED]:
+        if mode not in [self.MODE_NORMED, self.MODE_DIFF]:
             raise ValueError('Mode is wrong')
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
-        for j in range(9):
+        for j in range(8):
             # calc B hat
             tots = []
             self.calc_funs(j, xs)
@@ -36,9 +34,6 @@ class SPWDE(object):
                 alphas2 = self.calc_alphas(j, xs, balls_info, self.dual_fun)
                 alphas2 = np.array(list(alphas2.values()))
                 alphas2 = (alphas2 * alphas2).sum()
-            if mode == self.MODE_MDL:
-                alphas2 = self.calc_alphas(j, xs, balls_info, self.dual_fun)
-                num_alphas = len(alphas2)
             for i, x in enumerate(xs):
                 alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun)
                 g_ring_x = 0.0
@@ -55,23 +50,15 @@ class SPWDE(object):
                     else:
                         raise RuntimeError('Got norms but no value')
                 else:
-                    if mode == self.MODE_NORMED or mode == self.MODE_MDL:
+                    if mode == self.MODE_NORMED:
                         tots.append(g_ring_x * g_ring_x / norm2)
-                    elif mode == self.MODE_DIFF:
-                        tots.append(g_ring_x * g_ring_x)
-                    else: # mode == UNNORMED
+                    else: # mode == self.MODE_DIFF:
                         tots.append(g_ring_x * g_ring_x)
             tots = np.array(tots)
             if mode == self.MODE_NORMED:
                 b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
-            elif mode == self.MODE_DIFF:
+            else: # mode == self.MODE_DIFF:
                 b_hat_j = 2 * calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - alphas2
-            elif mode == self.MODE_MDL:
-                print(j, calc_surface(num_alphas), calc_vol_theta(xs.shape[0], num_alphas))
-                mdl = calc_surface(num_alphas) /  calc_vol_theta(xs.shape[0], num_alphas)
-                b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - mdl
-            else: # model == MODE_UNNORMED
-                b_hat_j = calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
             print(j, b_hat_j)
 
     def calc_funs(self, j, xs):
@@ -81,7 +68,7 @@ class SPWDE(object):
         qq = (0, 0)  # alphas
         funs = {}
         for what in ['dual', 'base']:
-            zs_min, zs_max = self.wave.z_range(what, (qq, jj, None), self.minx, self.maxx)
+            zs_min, zs_max = self.wave.z_range(what, (qq, jpow2, None), self.minx, self.maxx)
             funs[what] = {}
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
                 funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))(xs)
@@ -92,7 +79,8 @@ class SPWDE(object):
     def calc_alphas_no_i(self, j, xs, i, balls_info, dual_fun):
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
-        zs_min, zs_max = self.wave.z_range('dual', (qq, jj, None), self.minx, self.maxx)
+        jpow2 = np.array([2 ** j for j in jj])
+        zs_min, zs_max = self.wave.z_range('dual', (qq, jpow2, None), self.minx, self.maxx)
         omega_no_i = calc_omega(xs.shape[0] - 1, self.k)
         resp = {}
         balls = balls_no_i(balls_info, i)
@@ -105,7 +93,8 @@ class SPWDE(object):
     def calc_alphas(self, j, xs, balls_info, dual_fun):
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
-        zs_min, zs_max = self.wave.z_range('dual', (qq, jj, None), self.minx, self.maxx)
+        jpow2 = np.array([2 ** j for j in jj])
+        zs_min, zs_max = self.wave.z_range('dual', (qq, jpow2, None), self.minx, self.maxx)
         omega = calc_omega(xs.shape[0], self.k)
         resp = {}
         balls = balls_info.sqrt_vol_k
