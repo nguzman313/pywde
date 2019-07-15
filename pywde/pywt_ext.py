@@ -17,13 +17,13 @@ def trim_zeros(coeffs):
     return coeffs[np.min(nz):np.max(nz) + 1]
 
 def calc_fun(support, values):
-    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=1)
+    resp = interp1d(np.linspace(*support, num=len(values)), values, fill_value=0.0, bounds_error=False, kind=3)
     resp.support = support
     return resp
 
 _RE1 = re.compile('(db|sym)([0-9]+)')
 _RE = re.compile('(rbio|bior)([0-9]+)[.]([0-9]+)')
-_RESOLUTION_1D = 16
+_RESOLUTION_1D = 12
 
 def wave_support_info(pywt_wave):
     resp = {}
@@ -173,7 +173,7 @@ class Wavelet(pywt.Wavelet):
         :param ix: See `fun_ix`
         :return: tuple
         """
-        q, s, z = ix
+        q, s, _ = ix
         fun = self.funs[what][q]
         a, b = fun.support
         # minx <= x <= maxx
@@ -276,7 +276,7 @@ class WaveletTensorProduct(object):
             return lambda i: xx[:, i]
 
     def z_range(self, what, ix, minx, maxx):
-        qs, js, zs = ix
+        qs, js, _ = ix
         zs_min, zs_max = [], []
         for i in range(self.dim):
             zi_min, zi_max = self.waves[i].z_range(what, (qs[i], js[i], None), minx[i], maxx[i])
