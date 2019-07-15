@@ -31,18 +31,19 @@ class SPWDE(object):
             tots = []
             self.calc_funs(j, xs)
             if mode == self.MODE_DIFF:
-                alphas2 = self.calc_alphas(j, xs, balls_info, self.dual_fun)
+                alphas2 = self.calc_alphas(j, xs, balls_info)
                 alphas2 = np.array(list(alphas2.values()))
-                alphas2 = (alphas2 * alphas2).sum()
+                alphas2 = (alphas2[:,0] * alphas2[:,1]).sum()
             for i, x in enumerate(xs):
-                alphas = self.calc_alphas_no_i(j, xs, i, balls_info, self.dual_fun)
+                alphas = self.calc_alphas_no_i(j, xs, i, balls_info)
                 g_ring_x = 0.0
                 norm2 = 0.0
                 for zs in alphas:
-                    alpha_zs = alphas[zs]
+                    if zs not in self.base_fun:
+                        continue
+                    alpha_zs, alpha_d_zs = alphas[zs]
                     g_ring_x += alpha_zs * self.base_fun[zs][i]
-                    # todo: only orthogonal case
-                    norm2 += alpha_zs * alpha_zs
+                    norm2 += alpha_zs * alpha_d_zs
                 # q_ring_x ^ 2 / norm2 == f_at_x
                 if norm2 == 0.0:
                     if g_ring_x == 0.0:
@@ -75,15 +76,7 @@ class SPWDE(object):
         self.base_fun = funs['base']
         self.dual_fun = funs['dual']
 
-    def calc_funs_at(self, xs):
-        self.base_fun_at = {}
-        for zs, fun in self.base_fun.items():
-            self.base_fun_at[zs] = fun(xs)
-        self.dual_fun_at = {}
-        for zs, fun in self.dual_fun.items():
-            self.dual_fun_at[zs] = fun(xs)
-
-    def calc_alphas_no_i(self, j, xs, i, balls_info, dual_fun):
+    def calc_alphas_no_i(self, j, xs, i, balls_info):
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
@@ -93,11 +86,21 @@ class SPWDE(object):
         balls = balls_no_i(balls_info, i)
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
             # below, we remove factor for i from sum << this has the biggest impact in performance
-            alpha_zs = omega_no_i * ((dual_fun[zs] * balls).sum() - dual_fun[zs][i] * balls[i])
-            resp[zs] = alpha_zs
+            alpha_zs = omega_no_i * ((self.dual_fun[zs] * balls).sum() - self.dual_fun[zs][i] * balls[i])
+            resp[zs] = (alpha_zs, alpha_zs)
+        if self.wave.orthogonal:
+            # we are done
+            return resp
+        zs_min, zs_max = self.wave.z_range('base', (qq, jpow2, None), self.minx, self.maxx)
+        for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
+            if zs not in resp:
+                continue
+            # below, we remove factor for i from sum << this has the biggest impact in performance
+            alpha_d_zs = omega_no_i * ((self.base_fun[zs] * balls).sum() - self.base_fun[zs][i] * balls[i])
+            resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
-    def calc_alphas(self, j, xs, balls_info, dual_fun):
+    def calc_alphas(self, j, xs, balls_info):
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
@@ -106,9 +109,17 @@ class SPWDE(object):
         resp = {}
         balls = balls_info.sqrt_vol_k
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-            # below, we remove factor for i from sum << this has the biggest impact in performance
-            alpha_zs = omega * (dual_fun[zs] * balls).sum()
-            resp[zs] = alpha_zs
+            alpha_zs = omega * (self.dual_fun[zs] * balls).sum()
+            resp[zs] = (alpha_zs, alpha_zs)
+        if self.wave.orthogonal:
+            # we are done
+            return resp
+        zs_min, zs_max = self.wave.z_range('base', (qq, jpow2, None), self.minx, self.maxx)
+        for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
+            if zs not in resp:
+                continue
+            alpha_d_zs = omega * (self.base_fun[zs] * balls).sum()
+            resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
 
