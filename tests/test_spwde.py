@@ -18,13 +18,15 @@ def test_calc_alphas_no_i():
     balls_info = calc_sqrt_vs(data, k)
     spwde.minx = np.amin(data, axis=0)
     spwde.maxx = np.amax(data, axis=0)
-    spwde.calc_funs(j0, data)
-    alphas = spwde.calc_alphas_no_i(j0, data, 1, balls_info, spwde.dual_fun)
-    for k, v in alphas.items():
+    spwde.calc_funs_at(j0, data)
+    alphas = spwde.calc_alphas_no_i(j0, data, 1, balls_info)
+    for k, (v1, v2) in alphas.items():
         if k == (0, 0):
-            assert math.fabs(v - 0.447213595499959) < 0.000001
+            assert math.fabs(v2 - 0.447213595499959) < 0.000001
+            assert math.fabs(v1 - 0.447213595499959) < 0.000001
         else:
-            assert v == 0.0
+            assert v1 == 0.0
+            assert v2 == 0.0
 
 
 def test_sqrt_vunit():

@@ -80,13 +80,13 @@ class SPWDE(object):
         if norm2 == 0.0:
             raise RuntimeError('No norm')
 
-        def pdf(xs):
+        def pdf(xs, alphas=alphas, norm2=norm2, base_fun=self.base_fun):
             g_ring_xs = np.zeros(xs.shape[0])
             for zs in alphas:
-                if zs not in self.base_fun:
+                if zs not in base_fun:
                     continue
                 alpha_zs, alpha_d_zs = alphas[zs]
-                g_ring_xs += alpha_zs * self.base_fun[zs](xs)
+                g_ring_xs += alpha_zs * base_fun[zs](xs)
             # q_ring_x ^ 2 / norm2 == f_at_x
             return g_ring_xs * g_ring_xs / norm2
         return pdf
