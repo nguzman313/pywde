@@ -2,6 +2,7 @@ import math
 import itertools as itt
 import numpy as np
 from collections import namedtuple
+from datetime import datetime
 from scipy.special import gamma
 from sklearn.neighbors import BallTree
 
@@ -21,14 +22,15 @@ class SPWDE(object):
     MODE_DIFF = 'diff'
 
     def best_j(self, xs, mode):
+        t0 = datetime.now()
         if mode not in [self.MODE_NORMED, self.MODE_DIFF]:
             raise ValueError('Mode is wrong')
-        self.best_j_data = []
+        best_j_data = []
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
-        for j in range(8):
-            # calc B hat
+        for j in range(7):
+            # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
             tots = []
             self.calc_funs_at(j, xs)
             if mode == self.MODE_DIFF:
@@ -63,14 +65,22 @@ class SPWDE(object):
                 b_hat_j = 2 * calc_omega(xs.shape[0], self.k) * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - alphas2
             print(j, b_hat_j)
             # if calculating pdf
+            name = 'WDE Alphas, dj=%d' % j
             if mode == self.MODE_DIFF:
-                pdf = self.calc_pdf(alphas_dict)
+                pdf = self.calc_pdf(alphas_dict, name)
             else:
                 alphas_dict = self.calc_alphas(j, xs, balls_info)
-                pdf = self.calc_pdf(alphas_dict)
-            self.best_j_data.append((j, b_hat_j, pdf))
+                pdf = self.calc_pdf(alphas_dict, name)
+            elapsed = (datetime.now() - t0).total_seconds()
+            best_j_data.append((j, b_hat_j, pdf, elapsed))
+        best_b_hat = max([info_j[1] for info_j in best_j_data])
+        best_j = list(filter(lambda info_j: info_j[1] == best_b_hat, best_j_data))[0][0]
+        self.best_j_data = [
+            tuple([info_j[0], info_j[0] == best_j, info_j[1], info_j[2], info_j[3]])
+            for info_j in best_j_data]
 
-    def calc_pdf(self, alphas):
+
+    def calc_pdf(self, alphas, name):
         norm2 = 0.0
         for zs in alphas:
             if zs not in self.base_fun:
@@ -89,6 +99,7 @@ class SPWDE(object):
                 g_ring_xs += alpha_zs * base_fun[zs](xs)
             # q_ring_x ^ 2 / norm2 == f_at_x
             return g_ring_xs * g_ring_xs / norm2
+        pdf.name = name
         return pdf
 
     def calc_funs_at(self, j, xs):
