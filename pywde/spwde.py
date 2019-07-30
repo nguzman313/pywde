@@ -32,20 +32,20 @@ class SPWDE(object):
         for j in range(7):
             # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
             tots = []
-            self.calc_funs_at(j, xs)
+            base_fun, base_fun_xs, dual_fun_xs = self.calc_funs_at(j, xs)
             if mode == self.MODE_DIFF:
-                alphas_dict = self.calc_alphas(j, xs, balls_info)
+                alphas_dict = self.calc_alphas(base_fun_xs, dual_fun_xs, j, xs, balls_info)
                 alphas2 = np.array(list(alphas_dict.values()))
                 alphas2 = (alphas2[:,0] * alphas2[:,1]).sum()
             for i, x in enumerate(xs):
-                alphas = self.calc_alphas_no_i(j, xs, i, balls_info)
+                alphas = self.calc_alphas_no_i(base_fun_xs, dual_fun_xs, j, xs, i, balls_info)
                 g_ring_x = 0.0
                 norm2 = 0.0
                 for zs in alphas:
-                    if zs not in self.base_fun_xs:
+                    if zs not in base_fun_xs:
                         continue
                     alpha_zs, alpha_d_zs = alphas[zs]
-                    g_ring_x += alpha_zs * self.base_fun_xs[zs][i]
+                    g_ring_x += alpha_zs * base_fun_xs[zs][i]
                     norm2 += alpha_zs * alpha_d_zs
                 # q_ring_x ^ 2 / norm2 == f_at_x
                 if norm2 == 0.0:
@@ -67,10 +67,10 @@ class SPWDE(object):
             # if calculating pdf
             name = 'WDE Alphas, dj=%d' % j
             if mode == self.MODE_DIFF:
-                pdf = self.calc_pdf(alphas_dict, name)
+                pdf = self.calc_pdf(base_fun, alphas_dict, name)
             else:
-                alphas_dict = self.calc_alphas(j, xs, balls_info)
-                pdf = self.calc_pdf(alphas_dict, name)
+                alphas_dict = self.calc_alphas(base_fun_xs, dual_fun_xs, j, xs, balls_info)
+                pdf = self.calc_pdf(base_fun, alphas_dict, name)
             elapsed = (datetime.now() - t0).total_seconds()
             best_j_data.append((j, b_hat_j, pdf, elapsed))
         best_b_hat = max([info_j[1] for info_j in best_j_data])
@@ -80,17 +80,28 @@ class SPWDE(object):
             for info_j in best_j_data]
 
 
-    def calc_pdf(self, alphas, name):
+    def best_c(self, xs, j0, j1):
+        "best c - hard thresholding"
+        balls_info = calc_sqrt_vs(xs, self.k)
+        self.minx = np.amin(xs, axis=0)
+        self.maxx = np.amax(xs, axis=0)
+        for j in range(j0, j1 + 1):
+
+            pass
+
+
+
+    def calc_pdf(self, base_fun, alphas, name):
         norm2 = 0.0
         for zs in alphas:
-            if zs not in self.base_fun:
+            if zs not in base_fun:
                 continue
             alpha_zs, alpha_d_zs = alphas[zs]
             norm2 += alpha_zs * alpha_d_zs
         if norm2 == 0.0:
             raise RuntimeError('No norm')
 
-        def pdf(xs, alphas=alphas, norm2=norm2, base_fun=self.base_fun):
+        def pdf(xs, alphas=alphas, norm2=norm2, base_fun=base_fun):
             g_ring_xs = np.zeros(xs.shape[0])
             for zs in alphas:
                 if zs not in base_fun:
@@ -103,13 +114,14 @@ class SPWDE(object):
         return pdf
 
     def calc_funs_at(self, j, xs):
-        self.calc_funs(j)
-        self.base_fun_xs = {}
-        for zs in self.base_fun:
-            self.base_fun_xs[zs] = self.base_fun[zs](xs)
-        self.dual_fun_xs = {}
-        for zs in self.dual_fun:
-            self.dual_fun_xs[zs] = self.dual_fun[zs](xs)
+        base_fun, dual_fun = self.calc_funs(j)
+        base_fun_xs = {}
+        for zs in base_fun:
+            base_fun_xs[zs] = base_fun[zs](xs)
+        dual_fun_xs = {}
+        for zs in dual_fun:
+            dual_fun_xs[zs] = dual_fun[zs](xs)
+        return base_fun, base_fun_xs, dual_fun_xs
 
     def calc_funs(self, j):
         jj = [j + j0 for j0 in self.j0s]
@@ -122,10 +134,10 @@ class SPWDE(object):
             funs[what] = {}
             for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
                 funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))
-        self.base_fun = funs['base']
-        self.dual_fun = funs['dual']
+        return funs['base'], funs['dual']
 
-    def calc_alphas_no_i(self, j, xs, i, balls_info):
+    def calc_alphas_no_i(self, base_fun_xs, dual_fun_xs, j, xs, i, balls_info):
+        "Calculate alphas (w/ dual) and alpha-duals (w/ base)"
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
@@ -135,7 +147,7 @@ class SPWDE(object):
         balls = balls_no_i(balls_info, i)
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
             # below, we remove factor for i from sum << this has the biggest impact in performance
-            alpha_zs = omega_no_i * ((self.dual_fun_xs[zs] * balls).sum() - self.dual_fun_xs[zs][i] * balls[i])
+            alpha_zs = omega_no_i * ((dual_fun_xs[zs] * balls).sum() - dual_fun_xs[zs][i] * balls[i])
             resp[zs] = (alpha_zs, alpha_zs)
         if self.wave.orthogonal:
             # we are done
@@ -145,11 +157,11 @@ class SPWDE(object):
             if zs not in resp:
                 continue
             # below, we remove factor for i from sum << this has the biggest impact in performance
-            alpha_d_zs = omega_no_i * ((self.base_fun_xs[zs] * balls).sum() - self.base_fun_xs[zs][i] * balls[i])
+            alpha_d_zs = omega_no_i * ((base_fun_xs[zs] * balls).sum() - base_fun_xs[zs][i] * balls[i])
             resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
-    def calc_alphas(self, j, xs, balls_info):
+    def calc_alphas(self, base_fun_xs, dual_fun_xs, j, xs, balls_info):
         qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
@@ -158,7 +170,7 @@ class SPWDE(object):
         resp = {}
         balls = balls_info.sqrt_vol_k
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
-            alpha_zs = omega * (self.dual_fun_xs[zs] * balls).sum()
+            alpha_zs = omega * (dual_fun_xs[zs] * balls).sum()
             resp[zs] = (alpha_zs, alpha_zs)
         if self.wave.orthogonal:
             # we are done
@@ -167,7 +179,7 @@ class SPWDE(object):
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
             if zs not in resp:
                 continue
-            alpha_d_zs = omega * (self.base_fun_xs[zs] * balls).sum()
+            alpha_d_zs = omega * (base_fun_xs[zs] * balls).sum()
             resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
