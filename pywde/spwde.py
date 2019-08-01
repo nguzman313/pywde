@@ -32,13 +32,13 @@ class SPWDE(object):
         for j in range(7):
             # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
             tots = []
-            base_fun, base_fun_xs, dual_fun_xs = self.calc_funs_at(j, xs)
+            base_fun, base_fun_xs, dual_fun_xs = self.calc_funs_at(j, xs, (0, 0))
             if mode == self.MODE_DIFF:
-                alphas_dict = self.calc_alphas(base_fun_xs, dual_fun_xs, j, xs, balls_info)
+                alphas_dict = self.calc_coeffs(base_fun_xs, dual_fun_xs, j, xs, balls_info, (0, 0))
                 alphas2 = np.array(list(alphas_dict.values()))
                 alphas2 = (alphas2[:,0] * alphas2[:,1]).sum()
             for i, x in enumerate(xs):
-                alphas = self.calc_alphas_no_i(base_fun_xs, dual_fun_xs, j, xs, i, balls_info)
+                alphas = self.calc_coeffs_no_i(base_fun_xs, dual_fun_xs, j, xs, i, balls_info, (0, 0))
                 g_ring_x = 0.0
                 norm2 = 0.0
                 for zs in alphas:
@@ -69,7 +69,7 @@ class SPWDE(object):
             if mode == self.MODE_DIFF:
                 pdf = self.calc_pdf(base_fun, alphas_dict, name)
             else:
-                alphas_dict = self.calc_alphas(base_fun_xs, dual_fun_xs, j, xs, balls_info)
+                alphas_dict = self.calc_coeffs(base_fun_xs, dual_fun_xs, j, xs, balls_info, (0, 0))
                 pdf = self.calc_pdf(base_fun, alphas_dict, name)
             elapsed = (datetime.now() - t0).total_seconds()
             best_j_data.append((j, b_hat_j, pdf, elapsed))
@@ -80,16 +80,68 @@ class SPWDE(object):
             for info_j in best_j_data]
 
 
-    def best_c(self, xs, j0, j1):
+    def best_c(self, xs, delta_j):
         "best c - hard thresholding"
+        assert delta_j > 0, 'delta_j must be 1 or more'
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
-        for j in range(j0, j1 + 1):
+        qqs = self.wave.qq
 
-            pass
+        # base funs for levels of interest
+        base_funs_j = {}
+        base_funs_j[(0, qqs[0])] = self.calc_funs_at(0, xs, qqs[0])
+        for j, qq in itt.product(range(delta_j), qqs[1:]):
+            base_funs_j[(j, qq)] = self.calc_funs_at(j, xs, qq)
+        # base_funs_j [ (j, qq) ] => base_fun, base_fun_xs, dual_fun_xs
 
+        # rank betas from large to smallest; we will incrementaly calculate
+        # the HD_i for each in turn
+        all_betas = []
+        for j, qq in base_funs_j:
+            base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(j, qq)]
+            if qq == (0, 0):
+                continue
+            cc = self.calc_coeffs(base_fun_xs, dual_fun_xs, j, xs, balls_info, qq)
+            for zs in cc:
+                coeff_zs, coeff_d_zs = cc[zs]
+                if coeff_zs == 0.0:
+                    continue
+                all_betas.append((qq, j, zs, coeff_zs, coeff_d_zs))
+        # bio is sqrt( beta * dual_beta ) ??
+        key_order = lambda tt: math.fabs(tt[3])/math.sqrt(tt[1]+1)
+        all_betas = sorted(all_betas, key=key_order, reverse=True)
 
+        # get base line for acummulated values by computing alphas and the
+        # target HD_i functions
+        base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(0, (0, 0))]
+        cc = self.calc_coeffs(base_fun_xs, dual_fun_xs, 0, xs, balls_info, (0, 0))
+        norm2 = 0.0
+        vs_i = np.zeros(xs.shape[0])
+        for zs in cc:
+            coeff_zs, coeff_d_zs = cc[zs]
+            vs_i += coeff_zs * base_fun_xs[zs]
+            norm2 += coeff_zs * coeff_d_zs
+
+        # iterate through betas (similar to how we iterated through J in best_j)
+        all_balls = []
+        for i in range(len(xs)):
+            balls = balls_no_i(balls_info, i)
+            all_balls.append(balls)
+
+        omega_nk = calc_omega(xs.shape[0], self.k)
+        best_c_data = []
+        q_norm2 = norm2
+        for beta_info in all_betas:
+            qq, j, zs, coeff , coeff_d = beta_info
+            q_norm2 += coeff * coeff_d
+            for i, x in enumerate(xs):
+                base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(j, qq)]
+                coeff_i, coeff_d_i = self.calc_1_coeff_no_i(base_fun_xs, dual_fun_xs, j, xs, i, all_balls[i], qq, zs)
+                vs_i[i] += coeff_i * base_fun_xs[zs][i]
+            b_hat_beta = 2 * omega_nk * (np.sqrt(vs_i * vs_i) * balls_info.sqrt_vol_k).sum() - q_norm2
+            best_c_data.append((key_order(beta_info), b_hat_beta))
+        self.best_c_data = best_c_data
 
     def calc_pdf(self, base_fun, alphas, name):
         norm2 = 0.0
@@ -113,8 +165,8 @@ class SPWDE(object):
         pdf.name = name
         return pdf
 
-    def calc_funs_at(self, j, xs):
-        base_fun, dual_fun = self.calc_funs(j)
+    def calc_funs_at(self, j, xs, qq):
+        base_fun, dual_fun = self.calc_funs(j, qq)
         base_fun_xs = {}
         for zs in base_fun:
             base_fun_xs[zs] = base_fun[zs](xs)
@@ -123,11 +175,10 @@ class SPWDE(object):
             dual_fun_xs[zs] = dual_fun[zs](xs)
         return base_fun, base_fun_xs, dual_fun_xs
 
-    def calc_funs(self, j):
+    def calc_funs(self, j, qq):
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
 
-        qq = (0, 0)  # alphas
         funs = {}
         for what in ['dual', 'base']:
             zs_min, zs_max = self.wave.z_range(what, (qq, jpow2, None), self.minx, self.maxx)
@@ -136,9 +187,8 @@ class SPWDE(object):
                 funs[what][zs] = self.wave.fun_ix(what, (qq, jpow2, zs))
         return funs['base'], funs['dual']
 
-    def calc_alphas_no_i(self, base_fun_xs, dual_fun_xs, j, xs, i, balls_info):
+    def calc_coeffs_no_i(self, base_fun_xs, dual_fun_xs, j, xs, i, balls_info, qq):
         "Calculate alphas (w/ dual) and alpha-duals (w/ base)"
-        qq = (0, 0) # alphas
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
         zs_min, zs_max = self.wave.z_range('dual', (qq, jpow2, None), self.minx, self.maxx)
@@ -161,8 +211,16 @@ class SPWDE(object):
             resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
-    def calc_alphas(self, base_fun_xs, dual_fun_xs, j, xs, balls_info):
-        qq = (0, 0) # alphas
+    def calc_1_coeff_no_i(self, base_fun_xs, dual_fun_xs, j, xs, i, balls, qq, zs):
+        omega_no_i = calc_omega(xs.shape[0] - 1, self.k)
+        coeff = omega_no_i * ((dual_fun_xs[zs] * balls).sum() - dual_fun_xs[zs][i] * balls[i])
+        if self.wave.orthogonal:
+            # we are done
+            return coeff, coeff
+        coeff_d = omega_no_i * ((base_fun_xs[zs] * balls).sum() - base_fun_xs[zs][i] * balls[i])
+        return coeff, coeff_d
+
+    def calc_coeffs(self, base_fun_xs, dual_fun_xs, j, xs, balls_info, qq):
         jj = [j + j0 for j0 in self.j0s]
         jpow2 = np.array([2 ** j for j in jj])
         zs_min, zs_max = self.wave.z_range('dual', (qq, jpow2, None), self.minx, self.maxx)
