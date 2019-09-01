@@ -563,8 +563,9 @@ class WaveletDensityEstimator(object):
                 ])
                 ix = np.argmax(vals)
                 new_loss = 1 - (contribution + contributions[ix][1])/math.sqrt(norm2 + contributions[ix][2])
+                # new_loss += contributions[-1][2] * 0.5
                 # print(loss,'--',ix, new_loss, loss-new_loss, contributions[ix][2], contributions[ix][2] - (loss - new_loss))
-                if 0 < new_loss < loss or new_betas < 2:
+                if 0 < new_loss < loss: ## or new_betas < 2:
                     # below based on inspection - but looking into MDL paper to see if it can be justified
                     #if new_betas < 5: # or contributions[ix][2] - (loss - new_loss) > thr:
                         ## print(ix, new_loss, ';', contributions[ix][1], contributions[ix][2], contributions[ix][1]/math.sqrt(contributions[ix][2]))
@@ -589,6 +590,7 @@ class WaveletDensityEstimator(object):
             if stop:
                 break
             lvl_j += 1
+            break
         self.trace_v = np.array(trace_v)
         # true delta_j
         self.delta_j = max_lvl+1
