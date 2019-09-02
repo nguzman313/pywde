@@ -32,7 +32,7 @@ class SPWDE(object):
         omega = calc_omega(xs.shape[0], self.k)
         for j in range(7):
             # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
-            tots = []
+            g_ring_no_i_xs = []
             wave_base_j_00_ZS, wave_base_j_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs = self.calc_funs_at(j, (0, 0), xs)
             if mode == self.MODE_DIFF:
                 coeff_j_00_ZS = self.calc_coeffs(wave_base_j_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs, j, xs, balls_info, (0, 0))
@@ -40,30 +40,30 @@ class SPWDE(object):
                 alphas_norm_2 = (coeffs[:,0] * coeffs[:,1]).sum()
             for i, x in enumerate(xs):
                 coeff_no_i_j_00_ZS = self.calc_coeffs_no_i(wave_base_j_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs, j, xs, i, balls_info, (0, 0))
-                g_ring_x = 0.0
+                g_ring_no_i_at_xi = 0.0
                 norm2 = 0.0
                 for zs in coeff_no_i_j_00_ZS:
                     if zs not in wave_base_j_00_ZS_at_xs:
                         continue
                     alpha_zs, alpha_d_zs = coeff_no_i_j_00_ZS[zs]
-                    g_ring_x += alpha_zs * wave_base_j_00_ZS_at_xs[zs][i]
+                    g_ring_no_i_at_xi += alpha_zs * wave_base_j_00_ZS_at_xs[zs][i]
                     norm2 += alpha_zs * alpha_d_zs
                 # q_ring_x ^ 2 / norm2 == f_at_x
                 if norm2 == 0.0:
-                    if g_ring_x == 0.0:
-                        tots.append(0.0)
+                    if g_ring_no_i_at_xi == 0.0:
+                        g_ring_no_i_xs.append(0.0)
                     else:
                         raise RuntimeError('Got norms but no value')
                 else:
                     if mode == self.MODE_NORMED:
-                        tots.append(g_ring_x * g_ring_x / norm2)
+                        g_ring_no_i_xs.append(g_ring_no_i_at_xi * g_ring_no_i_at_xi / norm2)
                     else: # mode == self.MODE_DIFF:
-                        tots.append(g_ring_x * g_ring_x)
-            tots = np.array(tots)
+                        g_ring_no_i_xs.append(g_ring_no_i_at_xi * g_ring_no_i_at_xi)
+            g_ring_no_i_xs = np.array(g_ring_no_i_xs)
             if mode == self.MODE_NORMED:
-                b_hat_j = omega * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum()
+                b_hat_j = omega * (np.sqrt(g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum()
             else: # mode == self.MODE_DIFF:
-                b_hat_j = 2 * omega * (np.sqrt(tots) * balls_info.sqrt_vol_k).sum() - alphas_norm_2
+                b_hat_j = 2 * omega * (np.sqrt(g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - alphas_norm_2
             print(j, b_hat_j)
             # if calculating pdf
             name = 'WDE Alphas, dj=%d' % j
@@ -81,9 +81,11 @@ class SPWDE(object):
             for info_j in best_j_data]
 
 
-    def best_c(self, xs, delta_j):
+    def best_c(self, xs, delta_j, mode):
         "best c - hard thresholding"
         assert delta_j > 0, 'delta_j must be 1 or more'
+        assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
+
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
@@ -97,14 +99,21 @@ class SPWDE(object):
         # dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at [ (j, qq) ] => a triple with
         #   wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs
 
+        # iterate through betas (similar to how we iterated through J in best_j)
+        all_balls = []
+        for i in range(len(xs)):
+            balls = balls_no_i(balls_info, i)
+            all_balls.append(balls)
+
         # rank betas from large to smallest; we will incrementaly calculate
         # the HD_i for each in turn
         all_betas = []
         for (j, qq), triple in dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at.items():
-            wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs = triple
+            _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = triple
             if qq == (0, 0):
+                alphas_dict = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, 0, xs, balls_info, (0, 0))
                 continue
-            cc = self.calc_coeffs(wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs, j, xs, balls_info, qq)
+            cc = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, balls_info, qq)
             for zs in cc:
                 coeff_zs, coeff_d_zs = cc[zs]
                 if coeff_zs == 0.0:
@@ -116,34 +125,38 @@ class SPWDE(object):
 
         # get base line for acummulated values by computing alphas and the
         # target HD_i functions
-        wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(0, (0, 0))]
-        alphas_dict = self.calc_coeffs(wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs, 0, xs, balls_info, (0, 0))
-        norm2 = 0.0
-        vs_i = np.zeros(xs.shape[0])
-        for zs in alphas_dict:
-            coeff_zs, coeff_d_zs = alphas_dict[zs]
-            vs_i += coeff_zs * wave_base_0_00_ZS_at_xs[zs]
-            norm2 += coeff_zs * coeff_d_zs
-
-        # iterate through betas (similar to how we iterated through J in best_j)
-        all_balls = []
-        for i in range(len(xs)):
-            balls = balls_no_i(balls_info, i)
-            all_balls.append(balls)
+        _, wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(0, (0, 0))]
+        g_ring_no_i_xs = np.zeros(xs.shape[0])
+        norm2_xs = np.zeros(xs.shape[0])
+        for i, x in enumerate(xs):
+            coeff_no_i_0_00_ZS = self.calc_coeffs_no_i(wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs, 0, xs, i,
+                                                       balls_info, (0, 0))
+            for zs in coeff_no_i_0_00_ZS:
+                if zs not in wave_base_0_00_ZS_at_xs:
+                    continue
+                alpha_zs, alpha_d_zs = coeff_no_i_0_00_ZS[zs]
+                g_ring_no_i_xs[i] += alpha_zs * wave_base_0_00_ZS_at_xs[zs][i]
+                norm2_xs[i] += alpha_zs * alpha_d_zs
 
         omega_nk = calc_omega(xs.shape[0], self.k)
         best_c_data = []
-        q_norm2 = norm2
         best_hat = None
         self.best_c_found = None
         for cx, beta_info in enumerate(all_betas):
             qq, j, zs, coeff , coeff_d = beta_info
-            q_norm2 += coeff * coeff_d
+            _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
             for i, x in enumerate(xs):
-                wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
-                coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs, j, xs, i, all_balls[i], qq, zs)
-                vs_i[i] += coeff_i * wave_base_0_00_ZS_at_xs[zs][i]
-            b_hat_beta = 2 * omega_nk * (np.sqrt(vs_i * vs_i) * balls_info.sqrt_vol_k).sum() - q_norm2
+                coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, i, all_balls[i], qq, zs)
+                if zs not in wave_base_j_qq_ZS_at_xs:
+                    continue
+                g_ring_no_i_xs[i] += coeff_i * wave_base_j_qq_ZS_at_xs[zs][i]
+                norm2_xs[i] += coeff_i * coeff_d_i
+
+            if mode == self.MODE_NORMED:
+                b_hat_beta = omega_nk * (np.sqrt(g_ring_no_i_xs * g_ring_no_i_xs) /  norm2_xs * balls_info.sqrt_vol_k).sum()
+            else:  # mode == self.MODE_DIFF:
+                b_hat_beta = 2 * omega_nk * (np.sqrt(g_ring_no_i_xs * g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - norm2_xs.mean()
+
             best_c_data.append((key_order(beta_info), b_hat_beta))
 
         # calc best
@@ -367,11 +380,11 @@ class SPWDE(object):
         zs_min, zs_max = self.wave.z_range('dual', (qq, jpow2, None), self.minx, self.maxx)
         omega_no_i = calc_omega(xs.shape[0] - 1, self.k)
         resp = {}
-        balls = balls_no_i(balls_info, i)
+        vol_no_i = balls_no_i(balls_info, i)
         for zs in itt.product(*all_zs_tensor(zs_min, zs_max)):
             # below, we remove factor for i from sum << this has the biggest impact in performance
             # also, we calculated alpha_zs previously and cen be further optimised w/ calc_coeffs
-            alpha_zs = omega_no_i * ((wave_dual_j_qq_ZS_at_xs[zs] * balls).sum() - wave_dual_j_qq_ZS_at_xs[zs][i] * balls[i])
+            alpha_zs = omega_no_i * ((wave_dual_j_qq_ZS_at_xs[zs] * vol_no_i).sum() - wave_dual_j_qq_ZS_at_xs[zs][i] * vol_no_i[i])
             resp[zs] = (alpha_zs, alpha_zs)
         if self.wave.orthogonal:
             # we are done
@@ -381,17 +394,23 @@ class SPWDE(object):
             if zs not in resp:
                 continue
             # below, we remove factor for i from sum << this has the biggest impact in performance
-            alpha_d_zs = omega_no_i * ((wave_base_j_qq_ZS_at_xs[zs] * balls).sum() - wave_base_j_qq_ZS_at_xs[zs][i] * balls[i])
+            alpha_d_zs = omega_no_i * ((wave_base_j_qq_ZS_at_xs[zs] * vol_no_i).sum() - wave_base_j_qq_ZS_at_xs[zs][i] * vol_no_i[i])
             resp[zs] = (resp[zs][0], alpha_d_zs)
         return resp
 
     def calc_1_coeff_no_i(self, base_fun_xs, dual_fun_xs, j, xs, i, balls, qq, zs):
         omega_no_i = calc_omega(xs.shape[0] - 1, self.k)
-        coeff = omega_no_i * ((dual_fun_xs[zs] * balls).sum() - dual_fun_xs[zs][i] * balls[i])
+        if zs in dual_fun_xs:
+            coeff = omega_no_i * ((dual_fun_xs[zs] * balls).sum() - dual_fun_xs[zs][i] * balls[i])
+        else:
+            coeff = 0.0
         if self.wave.orthogonal:
             # we are done
             return coeff, coeff
-        coeff_d = omega_no_i * ((base_fun_xs[zs] * balls).sum() - base_fun_xs[zs][i] * balls[i])
+        if zs in base_fun_xs:
+            coeff_d = omega_no_i * ((base_fun_xs[zs] * balls).sum() - base_fun_xs[zs][i] * balls[i])
+        else:
+            coeff_d = 0.0
         return coeff, coeff_d
 
 
