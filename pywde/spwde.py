@@ -74,6 +74,7 @@ class SPWDE(object):
                 pdf = self.calc_pdf(wave_base_j_00_ZS, coeff_j_00_ZS, name)
             elapsed = (datetime.now() - t0).total_seconds()
             best_j_data.append((j, b_hat_j, pdf, elapsed))
+
         best_b_hat = max([info_j[1] for info_j in best_j_data])
         best_j = list(filter(lambda info_j: info_j[1] == best_b_hat, best_j_data))[0][0]
         self.best_j_data = [
@@ -83,7 +84,7 @@ class SPWDE(object):
 
     def best_c(self, xs, delta_j, mode):
         "best c - hard thresholding"
-        assert delta_j > 0, 'delta_j must be 1 or more'
+        # assert delta_j > 0, 'delta_j must be 1 or more'
         assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
 
         balls_info = calc_sqrt_vs(xs, self.k)
@@ -118,9 +119,9 @@ class SPWDE(object):
                 coeff_zs, coeff_d_zs = cc[zs]
                 if coeff_zs == 0.0:
                     continue
-                all_betas.append((qq, j, zs, coeff_zs, coeff_d_zs))
+                all_betas.append((j, qq, zs, coeff_zs, coeff_d_zs))
         # bio is sqrt( beta * dual_beta ) ??
-        key_order = lambda tt: math.fabs(tt[3])/math.sqrt(tt[1]+1)
+        key_order = lambda tt: math.fabs(tt[3])/math.sqrt(tt[0]+1)
         all_betas = sorted(all_betas, key=key_order, reverse=True)
 
         # get base line for acummulated values by computing alphas and the
@@ -138,12 +139,14 @@ class SPWDE(object):
                 g_ring_no_i_xs[i] += alpha_zs * wave_base_0_00_ZS_at_xs[zs][i]
                 norm2_xs[i] += alpha_zs * alpha_d_zs
 
+        ## print('g_ring_no_i_xs', g_ring_no_i_xs * g_ring_no_i_xs) << !!! OK !!!
+
         omega_nk = calc_omega(xs.shape[0], self.k)
         best_c_data = []
         best_hat = None
         self.best_c_found = None
         for cx, beta_info in enumerate(all_betas):
-            qq, j, zs, coeff , coeff_d = beta_info
+            j, qq, zs, coeff , coeff_d = beta_info
             _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
             for i, x in enumerate(xs):
                 coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, i, all_balls[i], qq, zs)
@@ -160,13 +163,21 @@ class SPWDE(object):
             best_c_data.append((key_order(beta_info), b_hat_beta))
 
         # calc best
-        pos_c = np.argmax(np.array([b_hat for _, b_hat in best_c_data]))
-        print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
-        name = 'WDE C = %f' % best_c_data[pos_c][0]
-        the_betas = all_betas[:pos_c + 1]
+        if len(best_c_data) > 0:
+            pos_c = np.argmax(np.array([b_hat for _, b_hat in best_c_data]))
+            print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
+            name = 'WDE C = %f' % best_c_data[pos_c][0]
+            the_betas = all_betas[:pos_c + 1]
+        else:
+            name = 'WDE C = None'
+            the_betas = []
         pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas, name)
-        self.best_c_found = (pdf, best_c_data[pos_c][0])
-        self.best_c_data = best_c_data
+        if len(best_c_data) > 0:
+            self.best_c_found = (pdf, best_c_data[pos_c][0])
+            self.best_c_data = best_c_data
+        else:
+            self.best_c_found = (pdf, None)
+            self.best_c_data = best_c_data
 
     def best_go(self, xs, max_delta_j):
         "best c - greedy optimisation `go`"
@@ -280,14 +291,14 @@ class SPWDE(object):
     def calc_pdf_with_betas(self, base_funs_j, alphas, betas, name):
         "Calculate the pdf for given alphas and betas"
         norm2 = 0.0
-        base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(0, (0, 0))]
+        base_fun, _, _ = base_funs_j[(0, (0, 0))]
         for zs in alphas:
             if zs not in base_fun:
                 continue
             alpha_zs, alpha_d_zs = alphas[zs]
             norm2 += alpha_zs * alpha_d_zs
-        for qq, j, zs, coeff_zs, coeff_d_zs in betas:
-            base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(j, qq)]
+        for j, qq, zs, coeff_zs, coeff_d_zs in betas:
+            base_fun, _, _ = base_funs_j[(j, qq)]
             if zs not in base_fun:
                 continue
             norm2 += coeff_zs * coeff_d_zs
@@ -297,14 +308,14 @@ class SPWDE(object):
 
         def pdf(xs, alphas=alphas, betas=betas, norm2=norm2, base_funs_j=base_funs_j):
             g_ring_xs = np.zeros(xs.shape[0])
+            base_fun, _, _ = base_funs_j[(0, (0, 0))]
             for zs in alphas:
-                base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(0, (0, 0))]
                 if zs not in base_fun:
                     continue
                 alpha_zs, alpha_d_zs = alphas[zs]
                 g_ring_xs += alpha_zs * base_fun[zs](xs)
-            for qq, j, zs, coeff_zs, coeff_d_zs in betas:
-                base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(j, qq)]
+            for j, qq, zs, coeff_zs, coeff_d_zs in betas:
+                base_fun, _, _ = base_funs_j[(j, qq)]
                 if zs not in base_fun:
                     continue
                 g_ring_xs += coeff_zs * base_fun[zs](xs)
