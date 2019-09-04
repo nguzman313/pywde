@@ -10,6 +10,19 @@ from pywde.pywt_ext import WaveletTensorProduct
 from pywde.common import all_zs_tensor
 
 
+class dictwithfactory(dict):
+    def __init__(self, factory):
+        super(dictwithfactory, self).__init__()
+        self._factory = factory
+
+    def __getitem__(self, key):
+        if key in self:
+            return self.get(key)
+        val = self._factory(key)
+        self[key] = val
+        return val
+
+
 class SPWDE(object):
     def __init__(self, waves, k=1):
         self.wave = WaveletTensorProduct([wave_desc[0] for wave_desc in waves])
@@ -23,8 +36,8 @@ class SPWDE(object):
 
     def best_j(self, xs, mode):
         t0 = datetime.now()
-        if mode not in [self.MODE_NORMED, self.MODE_DIFF]:
-            raise ValueError('Mode is wrong')
+        assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
+
         best_j_data = []
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
@@ -84,7 +97,7 @@ class SPWDE(object):
 
     def best_c(self, xs, delta_j, mode):
         "best c - hard thresholding"
-        # assert delta_j > 0, 'delta_j must be 1 or more'
+        assert delta_j > 0, 'delta_j must be 1 or more'
         assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
 
         balls_info = calc_sqrt_vs(xs, self.k)
@@ -100,7 +113,7 @@ class SPWDE(object):
         # dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at [ (j, qq) ] => a triple with
         #   wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs
 
-        # iterate through betas (similar to how we iterated through J in best_j)
+        # memoise balls
         all_balls = []
         for i in range(len(xs)):
             balls = balls_no_i(balls_info, i)
@@ -148,23 +161,25 @@ class SPWDE(object):
         for cx, beta_info in enumerate(all_betas):
             j, qq, zs, coeff , coeff_d = beta_info
             _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
+            coeff_i_vals = []
             for i, x in enumerate(xs):
                 coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, i, all_balls[i], qq, zs)
                 if zs not in wave_base_j_qq_ZS_at_xs:
                     continue
                 g_ring_no_i_xs[i] += coeff_i * wave_base_j_qq_ZS_at_xs[zs][i]
                 norm2_xs[i] += coeff_i * coeff_d_i
+                coeff_i_vals.append(coeff_i)
 
             if mode == self.MODE_NORMED:
-                b_hat_beta = omega_nk * (np.sqrt(g_ring_no_i_xs * g_ring_no_i_xs) /  norm2_xs * balls_info.sqrt_vol_k).sum()
+                b_hat_beta = omega_nk * (np.sqrt(g_ring_no_i_xs * g_ring_no_i_xs /  norm2_xs) * balls_info.sqrt_vol_k).sum()
             else:  # mode == self.MODE_DIFF:
                 b_hat_beta = 2 * omega_nk * (np.sqrt(g_ring_no_i_xs * g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - norm2_xs.mean()
 
-            best_c_data.append((key_order(beta_info), b_hat_beta))
+            best_c_data.append((key_order(beta_info), b_hat_beta, np.array(coeff_i_vals).std()))
 
         # calc best
         if len(best_c_data) > 0:
-            pos_c = np.argmax(np.array([b_hat for _, b_hat in best_c_data]))
+            pos_c = np.argmax(np.array([b_hat for _, b_hat, _ in best_c_data]))
             print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
             name = 'WDE C = %f' % best_c_data[pos_c][0]
             the_betas = all_betas[:pos_c + 1]
@@ -179,92 +194,158 @@ class SPWDE(object):
             self.best_c_found = (pdf, None)
             self.best_c_data = best_c_data
 
-    def best_go(self, xs, max_delta_j):
+    def best_greedy(self, xs, delta_j, mode):
         "best c - greedy optimisation `go`"
-        assert max_delta_j > 0, 'delta_j must be 1 or more'
+        assert delta_j > 0, 'delta_j must be 1 or more'
+        assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
+
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
         qqs = self.wave.qq
 
         # base funs for levels of interest
-        base_funs_j = {}
-        base_funs_j[(0, qqs[0])] = self.calc_funs_at(0, qqs[0], xs)
-        # base_funs_j [ (j, qq) ] => base_fun, base_fun_xs, dual_fun_xs
+        calc_funs_at = lambda key: self.calc_funs_at(key[0], key[1], xs)
+        dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at = dictwithfactory(calc_funs_at)
+        # dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at [ (j, qq) ] => a triple with
+        #   wave_base_0_00_ZS, wave_base_0_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs
 
-        # bio is sqrt( beta * dual_beta ) ??
-        key_order = lambda tt: math.fabs(tt[3])/math.sqrt(tt[1]+1)
-        all_betas = sorted(all_betas, key=key_order, reverse=True)
-
-        # get base line for acummulated values by computing alphas and the
-        # target HD_i functions
-        base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(0, (0, 0))]
-        alphas_dict = self.calc_coeffs(base_fun_xs, dual_fun_xs, 0, xs, balls_info, (0, 0))
-        norm2 = 0.0
-        vs_i = np.zeros(xs.shape[0])
-        for zs in alphas_dict:
-            coeff_zs, coeff_d_zs = alphas_dict[zs]
-            vs_i += coeff_zs * base_fun_xs[zs]
-            norm2 += coeff_zs * coeff_d_zs
-
-        # iterate through betas (similar to how we iterated through J in best_j)
+        # memoise balls
         all_balls = []
         for i in range(len(xs)):
             balls = balls_no_i(balls_info, i)
             all_balls.append(balls)
 
-        # This should produce same result as best-j if we are starting w/ right level
-        # pdf = self.calc_pdf_with_betas(base_funs_j, alphas_dict, [], 'test-blah.png')
-        # self.best_c_found = (pdf, 0)
-        # return
+        # rank betas from large to smallest; we will incrementaly calculate
+        # the HD_i for each in turn
+        triple = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(0, (0, 0))]
+        _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = triple
+        alphas_dict = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, 0, xs, balls_info, (0, 0))
 
-        omega_nk = calc_omega(xs.shape[0], self.k)
-        best_c_data = []
-        q_norm2 = norm2
-        best_hat = None
-        self.best_c_found = None
-        cur_j = 0
-        all_coeff_i, all_coeff_d_i = {}, {}
-        betas_cur_j = {}
-        betas_used = {}
-        while cur_j < max_delta_j:
-            for qq in qqs[1:]:
-                base_funs_j[(cur_j, qq)] = self.calc_funs_at(cur_j, qq, xs)
-                base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(cur_j, qq)]
-                cc = self.calc_coeffs(base_fun_xs, dual_fun_xs, cur_j, xs, balls_info, qq)
-                for zs in cc:
-                    coeff_zs, coeff_d_zs = cc[zs]
-                    if coeff_zs == 0.0:
-                        continue
-                    q_norm2 += coeff_zs * coeff_d_zs
-                    for i, x in enumerate(xs):
-                        coeff_i, coeff_d_i = self.calc_1_coeff_no_i(base_fun_xs, dual_fun_xs, cur_j, xs, i, all_balls[i],
-                                                                    qq, zs)
-                        vs_i[i] += coeff_i * base_fun_xs[zs][i]
-                    b_hat_beta = 2 * omega_nk * (np.sqrt(vs_i * vs_i) * balls_info.sqrt_vol_k).sum() - q_norm2
-                best_c_data.append((key_order(beta_info), b_hat_beta))
+        # get base line for acummulated values by computing alphas and the
+        # target HD_i functions
+        # >> calculate alphas >> same as best_c
+        _, wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(0, (0, 0))]
+        g_ring_no_i_xs = np.zeros(xs.shape[0])
+        norm2_xs = np.zeros(xs.shape[0])
+        for i, x in enumerate(xs):
+            coeff_no_i_0_00_ZS = self.calc_coeffs_no_i(wave_base_0_00_ZS_at_xs, wave_dual_0_00_ZS_at_xs, 0, xs, i,
+                                                       balls_info, (0, 0))
+            for zs in coeff_no_i_0_00_ZS:
+                if zs not in wave_base_0_00_ZS_at_xs:
+                    continue
+                alpha_zs, alpha_d_zs = coeff_no_i_0_00_ZS[zs]
+                g_ring_no_i_xs[i] += alpha_zs * wave_base_0_00_ZS_at_xs[zs][i]
+                norm2_xs[i] += alpha_zs * alpha_d_zs
 
-            break
+        ## print('g_ring_no_i_xs', g_ring_no_i_xs * g_ring_no_i_xs) << !!! OK !!!
 
-        for cx, beta_info in enumerate(all_betas):
-            qq, j, zs, coeff , coeff_d = beta_info
-            q_norm2 += coeff * coeff_d
+        def populate_at(new_key, populate_mode):
+            if populate_mode == 'by_j':
+                j, _, _ = new_key
+                if len(curr_betas.keys()) == 0:
+                    # add new level
+                    j = j + 1
+                    print('populate_at - new level', j)
+                    for qq in qqs[1:]:
+                        triple = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
+                        _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = triple
+                        cc = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, balls_info, qq)
+                        for zs in cc:
+                            coeff_zs, coeff_d_zs = cc[zs]
+                            if coeff_zs == 0.0:
+                                continue
+                            curr_betas[(j, qq, zs)] = coeff_zs, coeff_d_zs
+                    print('curr_betas #', len(curr_betas))
+                return
+            if populate_mode == 'by_near_zs':
+                raise RuntimeError('by_near_zs not implemented')
+            raise RuntimeError('populate_mode_wrong')
+
+        def beta_factory(key):
+            j, qq, zs, i = key
+            coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, i,
+                                                        all_balls[i], qq, zs)
+            return coeff_i, coeff_d_i
+
+        betas_no_i_j_qq_zz_i = dictwithfactory(beta_factory)
+
+        def g_ring_calc(j, qq, zs):
+            loc_g_ring_no_i_xs = g_ring_no_i_xs.copy()
+            loc_norm2_xs = norm2_xs.copy()
+
             for i, x in enumerate(xs):
-                base_fun, base_fun_xs, dual_fun_xs = base_funs_j[(j, qq)]
-                coeff_i, coeff_d_i = self.calc_1_coeff_no_i(base_fun_xs, dual_fun_xs, j, xs, i, all_balls[i], qq, zs)
-                vs_i[i] += coeff_i * base_fun_xs[zs][i]
-            b_hat_beta = 2 * omega_nk * (np.sqrt(vs_i * vs_i) * balls_info.sqrt_vol_k).sum() - q_norm2
-            best_c_data.append((key_order(beta_info), b_hat_beta))
+                coeff_i, coeff_d_i = betas_no_i_j_qq_zz_i[(j, qq, zs, i)]
+                if zs not in wave_base_j_qq_ZS_at_xs:
+                    continue
+                loc_g_ring_no_i_xs[i] += coeff_i * wave_base_j_qq_ZS_at_xs[zs][i]
+                loc_norm2_xs[i] += coeff_i * coeff_d_i
 
-        # calc best
-        pos_c = np.argmax(np.array([b_hat for _, b_hat in best_c_data]))
-        print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
-        name = 'WDE C = %f' % best_c_data[pos_c][0]
-        the_betas = all_betas[:pos_c + 1]
-        pdf = self.calc_pdf_with_betas(base_funs_j, alphas_dict, the_betas, name)
-        self.best_c_found = (pdf, best_c_data[pos_c][0])
-        self.best_c_data = best_c_data
+            return loc_g_ring_no_i_xs, loc_norm2_xs
 
+        def get_all_betas():
+            resp = []
+            for k, v in curr_betas.items():
+
+                j, qq, zs = k
+                coeff_zs, coeff_d_zs = v
+                loc_g_ring_no_i_xs, loc_norm2_xs = g_ring_calc(j, qq, zs)
+
+                if mode == self.MODE_NORMED:
+                    b_hat_beta = omega_nk * (np.sqrt(loc_g_ring_no_i_xs * loc_g_ring_no_i_xs / loc_norm2_xs) * balls_info.sqrt_vol_k).sum()
+                else:  # mode == self.MODE_DIFF:
+                    b_hat_beta = 2 * omega_nk * (np.sqrt(loc_g_ring_no_i_xs * loc_g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - loc_norm2_xs.mean()
+
+                resp.append((j, qq, zs, coeff_zs, coeff_d_zs, b_hat_beta))
+            return resp
+
+        popu_mode = 'by_j'
+        the_betas = []
+        omega_nk = calc_omega(xs.shape[0], self.k)
+        found = True
+
+        curr_betas = {}
+        curr_b_hat_beta =  None
+
+        # populate w/ j = 0, all QQ
+        populate_at((-1, None, None), 'by_j')
+
+        betas_num = 100
+        curr_j = 0
+        while found:
+            found = False
+
+            all_betas = get_all_betas()
+
+            if len(all_betas) == 0:
+                populate_at((curr_j, None, None), popu_mode)
+                curr_j += 1
+                continue
+
+            all_betas = sorted(all_betas, key=lambda tt: tt[5], reverse=True)
+            ##print(all_betas)
+
+            lvl_betas = max(int(betas_num / (curr_j + 1)), 1)
+            new_b_hat_beta = max([tt[5] for tt in all_betas[:lvl_betas]])
+            if curr_b_hat_beta is None or new_b_hat_beta > curr_b_hat_beta:
+                curr_b_hat_beta = min([tt[5] for tt in all_betas[:lvl_betas]])
+                found = True
+                for ix_tuple in all_betas[:lvl_betas]:
+                    the_betas.append(ix_tuple)
+                    del curr_betas[ix_tuple[:3]]
+                    ## populate_at(ix_tuple[:3], popu_mode)
+                    g_ring_no_i_xs, norm2_xs = g_ring_calc(*ix_tuple[:3])
+            else:
+                for k in list(curr_betas.keys()):
+                    del curr_betas[k]
+                populate_at((curr_j, None, None), popu_mode)
+                curr_j += 1
+
+        name = 'WDE greedy = %f' % curr_b_hat_beta
+        the_betas_p = [tt[:-1] for tt in the_betas]
+        pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas_p, name)
+        self.best_c_found = (pdf, curr_b_hat_beta)
+        self.best_c_data = [(ix, tt[5]) for ix, tt in enumerate(the_betas)]
 
     def calc_pdf(self, base_fun, alphas, name):
         norm2 = 0.0
