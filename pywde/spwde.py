@@ -5,6 +5,7 @@ from collections import namedtuple
 from datetime import datetime
 from scipy.special import gamma
 from sklearn.neighbors import BallTree
+import random
 
 from pywde.pywt_ext import WaveletTensorProduct
 from pywde.common import all_zs_tensor
@@ -34,7 +35,7 @@ class SPWDE(object):
     MODE_NORMED = 'normed'
     MODE_DIFF = 'diff'
 
-    def best_j(self, xs, mode):
+    def best_j(self, xs, mode, stop_on_max=False):
         t0 = datetime.now()
         assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
 
@@ -43,6 +44,8 @@ class SPWDE(object):
         self.minx = np.amin(xs, axis=0)
         self.maxx = np.amax(xs, axis=0)
         omega = calc_omega(xs.shape[0], self.k)
+        best_b_hat_j = None
+        best_j = None
         for j in range(7):
             # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
             g_ring_no_i_xs = []
@@ -77,7 +80,18 @@ class SPWDE(object):
                 b_hat_j = omega * (np.sqrt(g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum()
             else: # mode == self.MODE_DIFF:
                 b_hat_j = 2 * omega * (np.sqrt(g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - alphas_norm_2
-            print(j, b_hat_j)
+            print(mode, j, b_hat_j)
+            if best_j is None:
+                best_j = j
+                best_b_hat_j = b_hat_j
+            elif b_hat_j > best_b_hat_j:
+                best_j = j
+                best_b_hat_j = b_hat_j
+            elif stop_on_max:
+                self.the_best_j = best_j
+                return best_j
+            if stop_on_max:
+                continue
             # if calculating pdf
             name = 'WDE Alphas, dj=%d' % j
             if mode == self.MODE_DIFF:
@@ -188,7 +202,7 @@ class SPWDE(object):
             the_betas = []
         pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas, name)
         if len(best_c_data) > 0:
-            self.best_c_found = (pdf, best_c_data[pos_c][0])
+            self.best_c_found = (pdf, best_c_data[pos_c])
             self.best_c_data = best_c_data
         else:
             self.best_c_found = (pdf, None)
@@ -198,6 +212,7 @@ class SPWDE(object):
         "best c - greedy optimisation `go`"
         assert delta_j > 0, 'delta_j must be 1 or more'
         assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
+        random.seed(1)
 
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
@@ -283,6 +298,8 @@ class SPWDE(object):
 
             return loc_g_ring_no_i_xs, loc_norm2_xs
 
+        ball_std = balls_info.sqrt_vol_k.std()
+
         def get_all_betas():
             resp = []
             for k, v in curr_betas.items():
@@ -296,7 +313,8 @@ class SPWDE(object):
                 else:  # mode == self.MODE_DIFF:
                     b_hat_beta = 2 * omega_nk * (np.sqrt(loc_g_ring_no_i_xs * loc_g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - loc_norm2_xs.mean()
 
-                resp.append((j, qq, zs, coeff_zs, coeff_d_zs, b_hat_beta))
+                correction = - 4 * np.abs(loc_g_ring_no_i_xs).std() * (j+1) * ball_std
+                resp.append((j, qq, zs, coeff_zs, coeff_d_zs, b_hat_beta - correction, b_hat_beta - correction))
             return resp
 
         popu_mode = 'by_j'
@@ -310,39 +328,69 @@ class SPWDE(object):
         # populate w/ j = 0, all QQ
         populate_at((-1, None, None), 'by_j')
 
-        betas_num = 100
+        betas_num = 15
+        ## << BEST !! count number of betas of current level as we know it
+        ## 180 or 90 give very good results
         curr_j = 0
-        while found:
-            found = False
+        used_level = False
+        while curr_j < 6:
 
             all_betas = get_all_betas()
 
             if len(all_betas) == 0:
                 populate_at((curr_j, None, None), popu_mode)
                 curr_j += 1
+                used_level = False
                 continue
 
-            all_betas = sorted(all_betas, key=lambda tt: tt[5], reverse=True)
+            fkey1 = lambda tt: tt[5]
+            fkey2 = lambda tt: math.fabs(tt[3])*tt[5]
+            fkey3 = lambda tt: tt[3]*tt[3]*tt[5]
+            fkey4 = lambda tt: math.fabs(tt[3])*tt[5]/tt[6]
+            fkey5 = lambda tt: math.fabs(tt[3]) * tt[5] - tt[6]
+            fkey6 = lambda tt: tt[5] - tt[6] / (curr_j + 1)
+            fkey7 = lambda tt: tt[5] / tt[6]
+            fkey8 = lambda tt: math.fabs(tt[3])/tt[6]
+            fkey = fkey1
+            all_betas = sorted(all_betas, key=fkey, reverse=True)
             ##print(all_betas)
+            # print(all_betas[0], ':', fkey(all_betas[0]), '..(%d)..' % len(all_betas), all_betas[-1], ':', fkey(all_betas[-1]))
+            # import seaborn as sns
+            # import matplotlib.pyplot as plt
+            # xx = np.array([(tt[3], fkey(tt)) for tt in all_betas])
+            # ##xx = xx - xx.min()
+            # sns.scatterplot(xx[:,0], xx[:,1])
+            # plt.show()
+            # raise RuntimeError('blah')
+            ## ix = random.choices(list(range(all_betas)), weights=[fkey(tt) for tt in all_betas])
 
-            lvl_betas = max(int(betas_num / (curr_j + 1)), 1)
-            new_b_hat_beta = max([tt[5] for tt in all_betas[:lvl_betas]])
+            chosen_betas = all_betas[:betas_num]
+            new_b_hat_beta = max([tt[5] for tt in chosen_betas])
             if curr_b_hat_beta is None or new_b_hat_beta > curr_b_hat_beta:
-                curr_b_hat_beta = min([tt[5] for tt in all_betas[:lvl_betas]])
-                found = True
-                for ix_tuple in all_betas[:lvl_betas]:
+                ## print('.'*betas_num, end='')
+                curr_b_hat_beta = min([tt[5] for tt in chosen_betas])
+                used_level = True
+                print(all_betas[0], curr_b_hat_beta)
+                for ix_tuple in chosen_betas:
                     the_betas.append(ix_tuple)
                     del curr_betas[ix_tuple[:3]]
                     ## populate_at(ix_tuple[:3], popu_mode)
                     g_ring_no_i_xs, norm2_xs = g_ring_calc(*ix_tuple[:3])
-            else:
-                for k in list(curr_betas.keys()):
-                    del curr_betas[k]
-                populate_at((curr_j, None, None), popu_mode)
-                curr_j += 1
+                continue
+            if not used_level:
+                break
+            if curr_j + 1 >= 6:
+                break
+            print('\n next level, # betas =', len(the_betas))
+            for k in list(curr_betas.keys()):
+                del curr_betas[k]
+            populate_at((curr_j, None, None), popu_mode)
+            curr_j += 1
+            used_level = False
 
+        print('')
         name = 'WDE greedy = %f' % curr_b_hat_beta
-        the_betas_p = [tt[:-1] for tt in the_betas]
+        the_betas_p = [tt[:5] for tt in the_betas]
         pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas_p, name)
         self.best_c_found = (pdf, curr_b_hat_beta)
         self.best_c_data = [(ix, tt[5]) for ix, tt in enumerate(the_betas)]
