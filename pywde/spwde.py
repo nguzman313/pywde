@@ -39,7 +39,8 @@ class SPWDE(object):
     # threshold calculation
     TH_CLASSIC = 'classic' # Donoho et al
     TH_ADJUSTED = 'adjusted' # Delyon & Judistky
-    TH_EMP_STD = 'emp-std' # New
+    TH_EMP_STD = 'emp-var' # New
+    TH_EMP_STD_ADJ = 'emp-var-adj'  # New, adjusted
 
     def best_j(self, xs, mode, stop_on_max=False):
         t0 = datetime.now()
@@ -52,7 +53,7 @@ class SPWDE(object):
         omega = calc_omega(xs.shape[0], self.k)
         best_b_hat_j = None
         best_j = None
-        for j in range(7):
+        for j in range(8):
             # In practice, one would stop when maximum is reached, i.e. after first decreasing value of B Hat
             g_ring_no_i_xs = []
             wave_base_j_00_ZS, wave_base_j_00_ZS_at_xs, wave_dual_j_00_ZS_at_xs = self.calc_funs_at(j, (0, 0), xs)
@@ -119,7 +120,7 @@ class SPWDE(object):
         """best c - hard thresholding"""
         assert delta_j > 0, 'delta_j must be 1 or more'
         assert opt_target in [self.TARGET_NORMED, self.TARGET_DIFF], 'Wrong optimisation target'
-        assert th_mode in [self.TH_CLASSIC, self.TH_ADJUSTED, self.TH_EMP_STD], 'Wrong threshold strategy'
+        assert th_mode in [self.TH_CLASSIC, self.TH_ADJUSTED, self.TH_EMP_STD, self.TH_EMP_STD_ADJ], 'Wrong threshold strategy'
 
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
@@ -173,13 +174,22 @@ class SPWDE(object):
         # order3 = lambda tt: math.fabs(tt[3]) - 4 * tt[5] ## kind of work for low n
         # order3 = lambda tt: math.fabs(tt[3]) / (math.fabs(tt[3]) * 0.5 + tt[5]) # ??
         # order3 = lambda tt: tt[5]
-        order3 = lambda tt: 4 * tt[5] - math.fabs(tt[3])
+        order3 = lambda tt: math.fabs(tt[3]) / tt[5] / math.sqrt(tt[0]+1)
+        order4 = lambda tt: math.fabs(tt[3]) / tt[5]
         if th_mode == self.TH_CLASSIC:
             key_order = order1
+            subtitle = r"$\left| \beta_{j,q,z} \right| \geq C$"
         elif th_mode == self.TH_ADJUSTED:
             key_order = order2
-        else: # th_mode == self.TH_VARI:
+            subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \sqrt{j + 1}$"
+        elif th_mode == self.TH_EMP_STD_ADJ:
             key_order = order3
+            subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \hat{\sigma}\left[\beta_{j,q,z}^{(-i)}\right] \sqrt{j + 1}$"
+        elif th_mode == self.TH_EMP_STD:
+            key_order = order4
+            subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \hat{\sigma}\left[\beta_{j,q,z}^{(-i)}\right]$"
+        else:
+            raise RuntimeError('Unknown threshold mode')
         all_betas = sorted(all_betas, key=key_order, reverse=True)
 
         # get base line for acummulated values by computing alphas and the
@@ -233,12 +243,12 @@ class SPWDE(object):
         if len(best_c_data) > 0:
             pos_c = np.argmax(np.array([tt[1] for tt in best_c_data]))
             print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
-            name = 'WDE C = %f' % best_c_data[pos_c][0]
+            name = 'WDE C = %f (%d)' % (best_c_data[pos_c][0], pos_c + 1)
             the_betas = all_betas[:pos_c + 1]
         else:
             name = 'WDE C = None'
             the_betas = []
-        pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas, name)
+        pdf = self.calc_pdf_with_betas(dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at, alphas_dict, the_betas, name, subtitle)
         if len(best_c_data) > 0:
             self.best_c_found = (pdf, best_c_data[pos_c])
             self.best_c_data = best_c_data
@@ -246,7 +256,7 @@ class SPWDE(object):
             self.best_c_found = (pdf, None)
             self.best_c_data = best_c_data
 
-    def best_greedy(self, xs, delta_j, mode):
+    def best_greedy_not_working(self, xs, delta_j, mode):
         "best c - greedy optimisation `go`"
         assert delta_j > 0, 'delta_j must be 1 or more'
         assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
@@ -439,11 +449,10 @@ class SPWDE(object):
         self.best_c_found = (pdf, curr_b_hat_beta)
         self.best_c_data = [(ix, tt[5]) for ix, tt in enumerate(the_betas)]
 
-    def best_greedy2(self, xs, delta_j, mode):
+    def best_greedy(self, xs, delta_j, j0, opt_target):
         "best c - greedy optimisation `go`"
         assert delta_j > 0, 'delta_j must be 1 or more'
-        assert mode in [self.MODE_NORMED, self.MODE_DIFF], 'Wrong mode'
-        random.seed(1)
+        assert opt_target in [self.TARGET_NORMED, self.TARGET_DIFF], 'Wrong optimisation target'
 
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
@@ -486,27 +495,20 @@ class SPWDE(object):
 
         ## print('g_ring_no_i_xs', g_ring_no_i_xs * g_ring_no_i_xs) << !!! OK !!!
 
-        def populate_at(new_key, populate_mode):
-            if populate_mode == 'by_j':
-                j, _, _ = new_key
-                if len(curr_betas.keys()) == 0:
-                    # add new level
-                    j = j + 1
-                    print('populate_at - new level', j)
-                    for qq in qqs[1:]:
-                        triple = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
-                        _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = triple
-                        cc = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, balls_info, qq)
-                        for zs in cc:
-                            coeff_zs, coeff_d_zs = cc[zs]
-                            if coeff_zs == 0.0:
-                                continue
-                            curr_betas[(j, qq, zs)] = coeff_zs, coeff_d_zs
-                    print('curr_betas #', len(curr_betas))
-                return
-            if populate_mode == 'by_near_zs':
-                raise RuntimeError('by_near_zs not implemented')
-            raise RuntimeError('populate_mode_wrong')
+        def populate_betas():
+            for dj in range(delta_j):
+                j = j0 + dj
+                print('Calc. betas for level %d' % j)
+                for qq in qqs[1:]:
+                    triple = dict_triple_J_QQ_ZS__wbase_wbase_at_wdual_at[(j, qq)]
+                    _, wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs = triple
+                    cc = self.calc_coeffs(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j, xs, balls_info, qq)
+                    for zs in cc:
+                        coeff_zs, coeff_d_zs = cc[zs]
+                        if coeff_zs == 0.0:
+                            continue
+                        curr_betas[(j, qq, zs)] = coeff_zs, coeff_d_zs
+            print('curr_betas #', len(curr_betas))
 
         def beta_factory(key):
             j, qq, zs, i = key
@@ -533,7 +535,7 @@ class SPWDE(object):
 
         ball_std = balls_info.sqrt_vol_k.std()
 
-        def get_all_betas():
+        def calc_b_hat():
             resp = []
             for k, v in curr_betas.items():
 
@@ -541,7 +543,7 @@ class SPWDE(object):
                 coeff_zs, coeff_d_zs = v
                 loc_g_ring_no_i_xs, loc_norm2_xs, betas_j_qq_zs_no_i = g_ring_calc(j, qq, zs)
 
-                if mode == self.MODE_NORMED:
+                if opt_target == self.TARGET_NORMED:
                     b_hat_beta = omega_nk * (np.sqrt(loc_g_ring_no_i_xs * loc_g_ring_no_i_xs / loc_norm2_xs) * balls_info.sqrt_vol_k).sum()
                 else:  # mode == self.MODE_DIFF:
                     b_hat_beta = 2 * omega_nk * (np.sqrt(loc_g_ring_no_i_xs * loc_g_ring_no_i_xs) * balls_info.sqrt_vol_k).sum() - loc_norm2_xs.mean()
@@ -549,7 +551,8 @@ class SPWDE(object):
                 if len(betas_j_qq_zs_no_i) == 0:
                     continue
                 #print(j, qq, zs, b_hat_beta, coeff_zs, 3 * math.sqrt(betas_j_qq_zs_no_i.std()))
-                correction = 2 * math.sqrt(betas_j_qq_zs_no_i.std()) ##np.abs(loc_g_ring_no_i_xs).std() ## * (j+1) ##* ball_std
+                ## correction = 3 * math.sqrt(betas_j_qq_zs_no_i.std()) ##np.abs(loc_g_ring_no_i_xs).std() ## * (j+1) ##* ball_std
+                correction = math.fabs(coeff_zs) / betas_j_qq_zs_no_i.std()
                 b_hat_std = betas_j_qq_zs_no_i.std()
                 resp.append((j, qq, zs, coeff_zs, coeff_d_zs, b_hat_beta + correction, b_hat_beta, b_hat_std))
             return resp
@@ -563,67 +566,33 @@ class SPWDE(object):
         curr_b_hat_beta =  None
 
         # populate w/ j = 0, all QQ
-        populate_at((-1, None, None), 'by_j')
+        populate_betas()
 
-        betas_num = 10
-        ## << BEST !! count number of betas of current level as we know it
-        ## 180 or 90 give very good results
-        curr_j = 0
-        used_level = False
-        while curr_j < 6:
+        # betas_ref : position of b_hat that we will use to stop iteration. If we can't improve \hat{B}
+        # beyond the value at position betas_ref next time, we consider the optimum reached.
+        betas_ref = 3
+        while True:
 
-            all_betas = get_all_betas()
+            curr_b_hat = calc_b_hat()
 
-            if len(all_betas) == 0:
-                populate_at((curr_j, None, None), popu_mode)
-                curr_j += 1
-                used_level = False
-                continue
+            if len(curr_b_hat) == 0:
+                break
 
             fkey1 = lambda tt: tt[5]
-            fkey2 = lambda tt: math.fabs(tt[3])*tt[5]
-            fkey3 = lambda tt: tt[3]*tt[3]*tt[5]
-            fkey4 = lambda tt: math.fabs(tt[3])*tt[5]/tt[6]
-            fkey5 = lambda tt: math.fabs(tt[3]) * tt[5] - tt[6]
-            fkey6 = lambda tt: tt[5] - tt[6] / (curr_j + 1)
-            fkey7 = lambda tt: tt[5] / tt[6]
-            fkey8 = lambda tt: math.fabs(tt[3])/tt[6]
             fkey = fkey1
-            all_betas = sorted(all_betas, key=fkey, reverse=True)
-            ##print(all_betas)
-            # print(all_betas[0], ':', fkey(all_betas[0]), '..(%d)..' % len(all_betas), all_betas[-1], ':', fkey(all_betas[-1]))
-            # import seaborn as sns
-            # import matplotlib.pyplot as plt
-            # xx = np.array([(tt[3], fkey(tt)) for tt in all_betas])
-            # ##xx = xx - xx.min()
-            # sns.scatterplot(xx[:,0], xx[:,1])
-            # plt.show()
-            # raise RuntimeError('blah')
-            ## ix = random.choices(list(range(all_betas)), weights=[fkey(tt) for tt in all_betas])
+            curr_b_hat = sorted(curr_b_hat, key=fkey, reverse=True)
 
-            chosen_betas = all_betas[:betas_num]
-            new_b_hat_beta = max([tt[5] for tt in chosen_betas])
+            new_b_hat_beta = fkey(curr_b_hat[0])
             if curr_b_hat_beta is None or new_b_hat_beta > curr_b_hat_beta:
-                ## print('.'*betas_num, end='')
-                curr_b_hat_beta = min([tt[5] for tt in chosen_betas])
-                used_level = True
-                print(all_betas[0], curr_b_hat_beta)
-                for ix_tuple in chosen_betas:
-                    the_betas.append(ix_tuple)
-                    del curr_betas[ix_tuple[:3]]
-                    ## populate_at(ix_tuple[:3], popu_mode)
-                    g_ring_no_i_xs, norm2_xs, _ = g_ring_calc(*ix_tuple[:3])
+                ## we use a slightly less optimal value to smooth target a little bit
+                curr_b_hat_beta = fkey(curr_b_hat[betas_ref - 1])
+                print(curr_b_hat[0], curr_b_hat_beta)
+                the_betas.append(curr_b_hat[0])
+                del curr_betas[curr_b_hat[0][:3]]
+                g_ring_no_i_xs, norm2_xs, _ = g_ring_calc(*curr_b_hat[0][:3])
                 continue
-            if not used_level:
+            else:
                 break
-            if curr_j + 1 >= 6:
-                break
-            print('\n next level, # betas =', len(the_betas))
-            for k in list(curr_betas.keys()):
-                del curr_betas[k]
-            populate_at((curr_j, None, None), popu_mode)
-            curr_j += 1
-            used_level = False
 
         print('')
         name = 'WDE greedy = %f' % curr_b_hat_beta
@@ -654,7 +623,7 @@ class SPWDE(object):
         pdf.name = name
         return pdf
 
-    def calc_pdf_with_betas(self, base_funs_j, alphas, betas, name):
+    def calc_pdf_with_betas(self, base_funs_j, alphas, betas, name, subtitle=None):
         "Calculate the pdf for given alphas and betas"
         norm2 = 0.0
         base_fun, _, _ = base_funs_j[(0, (0, 0))]
@@ -688,6 +657,7 @@ class SPWDE(object):
             # q_ring_x ^ 2 / norm2 == f_at_x
             return g_ring_xs * g_ring_xs / norm2
         pdf.name = name
+        pdf.subtitle = subtitle
         return pdf
 
     def calc_funs_at(self, j, qq, xs):
