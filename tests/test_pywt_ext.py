@@ -11,7 +11,7 @@ from .conftest import intersect_1d, intersect_2d, assert_integral
 
 @pytest.mark.parametrize("wave",[
 Wavelet('db1'), Wavelet('db2'), Wavelet('db4'),
-Wavelet('db6'), Wavelet('bior1.3')
+Wavelet('db6'), Wavelet('bior1.3'), Wavelet('rbio1.3')
 ])
 @pytest.mark.parametrize('what', ['base', 'dual'])
 @pytest.mark.parametrize('ix', [(0,1,0), (1,1,0), (0,2,1), (1,2,-1)])
@@ -80,7 +80,7 @@ def test_ortho_case_j_1d(wave, ix, factor, prec):
 
 @pytest.mark.parametrize("wave", [
 Wavelet('db1'), Wavelet('db2'), Wavelet('db4'),
-Wavelet('db6'), Wavelet('bior1.3')
+Wavelet('db6'), Wavelet('bior1.3'), Wavelet('rbio1.3')
 ])
 @pytest.mark.parametrize("ix,delta_z,prec", [
     [(0, 1, 0), 1, 3],

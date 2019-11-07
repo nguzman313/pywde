@@ -40,7 +40,6 @@ class SPWDE(object):
     TH_CLASSIC = 'classic' # Donoho et al
     TH_ADJUSTED = 'adjusted' # Delyon & Judistky
     TH_EMP_STD = 'emp-var' # New
-    TH_EMP_STD_ADJ = 'emp-var-adj'  # New, adjusted
 
     def best_j(self, xs, mode, stop_on_max=False):
         t0 = datetime.now()
@@ -120,7 +119,7 @@ class SPWDE(object):
         """best c - hard thresholding"""
         assert delta_j > 0, 'delta_j must be 1 or more'
         assert opt_target in [self.TARGET_NORMED, self.TARGET_DIFF], 'Wrong optimisation target'
-        assert th_mode in [self.TH_CLASSIC, self.TH_ADJUSTED, self.TH_EMP_STD, self.TH_EMP_STD_ADJ], 'Wrong threshold strategy'
+        assert th_mode in [self.TH_CLASSIC, self.TH_ADJUSTED, self.TH_EMP_STD], 'Wrong threshold strategy'
 
         balls_info = calc_sqrt_vs(xs, self.k)
         self.minx = np.amin(xs, axis=0)
@@ -161,20 +160,21 @@ class SPWDE(object):
                         coeff_i, coeff_d_i = self.calc_1_coeff_no_i(wave_base_j_qq_ZS_at_xs, wave_dual_j_qq_ZS_at_xs, j,
                                                                     xs, i, all_balls[i], qq, zs)
                         coeff_i_vals.append(coeff_i)
-                    coeff_i_std = np.array(coeff_i_vals).std()
+                    # coeff_i_std = np.array(coeff_i_vals).std()
+                    coeff_i_std = (np.array(coeff_i_vals) - coeff_zs).std()
                 else:
                     coeff_i_std = 0.
                 all_betas.append((j, qq, zs, coeff_zs, coeff_d_zs, coeff_i_std))
 
-        # order1 : 1996, Delyon, Juditsky - On Minimax Wavelet Estimators
-        order1 = lambda tt: math.fabs(tt[3]) / math.sqrt(tt[0]+1)
         # order2 : 1995, Donoho, Johnstone, Kerkyacharian, Picard - Wavelet Shrinkage, Asymptopia
-        order2 = lambda tt: math.fabs(tt[3])
+        order1 = lambda tt: math.fabs(tt[3])
+        # order1 : 1996, Delyon, Juditsky - On Minimax Wavelet Estimators
+        order2 = lambda tt: math.fabs(tt[3]) / math.sqrt(delta_j - tt[0])
         # order3 : New things
         # order3 = lambda tt: math.fabs(tt[3]) - 4 * tt[5] ## kind of work for low n
         # order3 = lambda tt: math.fabs(tt[3]) / (math.fabs(tt[3]) * 0.5 + tt[5]) # ??
         # order3 = lambda tt: tt[5]
-        order3 = lambda tt: math.fabs(tt[3]) / tt[5] / math.sqrt(tt[0]+1)
+        # order3 = lambda tt: math.fabs(tt[3]) / tt[5] / math.sqrt(delta_j - tt[0])
         order4 = lambda tt: math.fabs(tt[3]) / tt[5]
         if th_mode == self.TH_CLASSIC:
             key_order = order1
@@ -182,9 +182,6 @@ class SPWDE(object):
         elif th_mode == self.TH_ADJUSTED:
             key_order = order2
             subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \sqrt{j + 1}$"
-        elif th_mode == self.TH_EMP_STD_ADJ:
-            key_order = order3
-            subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \hat{\sigma}\left[\beta_{j,q,z}^{(-i)}\right] \sqrt{j + 1}$"
         elif th_mode == self.TH_EMP_STD:
             key_order = order4
             subtitle = r"$\left| \beta_{j,q,z} \right| \geq C \hat{\sigma}\left[\beta_{j,q,z}^{(-i)}\right]$"
