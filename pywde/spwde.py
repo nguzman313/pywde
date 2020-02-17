@@ -240,7 +240,7 @@ class SPWDE(object):
         if len(best_c_data) > 0:
             pos_c = np.argmax(np.array([tt[1] for tt in best_c_data]))
             print('Best C', best_c_data[pos_c], '@ %d' % pos_c)
-            name = 'WDE C = %f (%d)' % (best_c_data[pos_c][0], pos_c + 1)
+            name = 'WDE C = %f (%d + %d)' % (best_c_data[pos_c][0], num_alphas, pos_c + 1)
             the_betas = all_betas[:pos_c + 1]
         else:
             name = 'WDE C = None'
